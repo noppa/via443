@@ -129,6 +129,6 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [x] Accounts: `packages/server` with SQL migrations, setup token, invites, access requests, sign-in links (shown to the admin or logged, not emailed yet), sessions, API tokens, and the dashboard. Wired into the Node relay.
 - [ ] Email delivery (SMTP / email API) for sign-in links and invites.
 - [ ] Rate limits on the sign-in and access-request forms.
-- [x] Cloudflare adapter: Worker, one Durable Object per tunnel, D1 accounts. Passes the shared suite under `wrangler dev`; not yet deployed.
+- [x] Cloudflare adapter: Worker, one Durable Object per tunnel, D1 accounts. Passes the shared suite under `wrangler dev`, and runs at via443.com: HTTP, streaming both ways, WebSockets and Vite HMR verified there, including after the tunnel's object has been idle.
 - [x] WebSocket pass-through (HMR): verified with Vite's HMR socket.
 - [ ] Multi-port, request log and inspector.

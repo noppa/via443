@@ -59,8 +59,8 @@ Put `VIA443_SETUP_TOKEN=some-secret` in `apps/cloudflare/.dev.vars`, then open `
 To deploy on your own domain (a zone on Cloudflare; the Free plan works):
 
 1. `cd apps/cloudflare && pnpm exec wrangler d1 create via443-accounts` and put the database ID into `env.production` in `wrangler.jsonc`.
-2. In `env.production`, set `VIA443_DOMAIN` and the two routes (`<domain>/*` and `*.<domain>/*`) to your domain.
-3. Add proxied DNS records for the apex and for `*`. Universal SSL covers `*.<domain>`.
+2. In `env.production`, set `VIA443_DOMAIN` and the two routes (the `<domain>` custom domain and `*.<domain>/*`) to your domain.
+3. Add a proxied DNS record for `*` (e.g. AAAA `*` → `100::`). Universal SSL covers `*.<domain>`. The apex is a Workers custom domain, so deploying creates its record.
 4. `pnpm exec wrangler secret put VIA443_SETUP_TOKEN --env production`
 5. `pnpm run deploy` (applies migrations to the remote D1, then deploys), and open `https://<domain>/setup?token=…`.
 
