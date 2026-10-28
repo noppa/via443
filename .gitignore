@@ -150,3 +150,7 @@ vite.config.ts.timestamp-*
 
 # Local relay data (SQLite databases)
 data/
+
+# Wrangler local state
+.wrangler/
+.dev.vars

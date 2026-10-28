@@ -32,6 +32,17 @@ pnpm via443 --port 3000 --server http://localhost:8080 --token v443_...
 
 Sign-in links and invites aren't emailed yet: the admin dashboard shows the link for you to send by hand, and links from the sign-in form are written to the relay's log.
 
+### Publishing the client
+
+The `via443` npm package is built from `packages/client` (esbuild bundles the private protocol package into it; `ws` stays a dependency):
+
+```sh
+pnpm smoke:pack                        # pack, install the tarball with npm, run its CLI and library through a tunnel
+cd packages/client && pnpm publish     # bump "version" first; pnpm swaps in the dist/ entry points
+```
+
+Publish with pnpm, not npm: the `dist/` entry points come from `publishConfig`, which only pnpm applies to `bin` and `exports`.
+
 ### Relay settings (self-hosted)
 
 | Variable | Default | Meaning |
@@ -45,3 +56,22 @@ Sign-in links and invites aren't emailed yet: the admin dashboard shows the link
 | `VIA443_SETUP_TOKEN` | — | Secret that enables `/setup?token=…` to create the first admin. Only works while there are no accounts. |
 
 In production, put a TLS-terminating reverse proxy such as Caddy in front, with a wildcard certificate for `*.<domain>`.
+
+### Cloudflare (Workers + Durable Objects + D1)
+
+The same relay runs on Cloudflare, in `apps/cloudflare`. Locally:
+
+```sh
+pnpm dev:cf      # applies D1 migrations locally, then wrangler dev on http://localhost:8787
+```
+
+Put `VIA443_SETUP_TOKEN=some-secret` in `apps/cloudflare/.dev.vars`, then open `http://localhost:8787/setup?token=some-secret`. Sign-in links from the sign-in form appear in the `wrangler dev` output (or `wrangler tail` when deployed).
+
+To deploy on your own domain (a zone on Cloudflare; the Free plan works):
+
+1. `cd apps/cloudflare && pnpm exec wrangler d1 create via443-accounts` and put the database ID into `env.production` in `wrangler.jsonc`.
+2. In `env.production`, set `VIA443_DOMAIN` and the two routes (the `<domain>` custom domain and `*.<domain>/*`) to your domain.
+3. Add a proxied DNS record for `*` (e.g. AAAA `*` → `100::`). Universal SSL covers `*.<domain>`. The apex is a Workers custom domain, so deploying creates its record.
+4. `pnpm exec wrangler secret put VIA443_SETUP_TOKEN --env production`
+5. `pnpm run deploy` (applies migrations to the remote D1, then deploys), and open `https://<domain>/setup?token=…`.
+

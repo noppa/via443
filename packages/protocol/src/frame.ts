@@ -7,6 +7,7 @@
  *   +-------+-------+---------------+--------------...
  *
  * Stream 0 carries connection-level frames (WELCOME, GOAWAY, PING, PONG).
+ * Body frames are flow-controlled per stream with WINDOW frames (see flow.ts).
  * The protocol version, API token and resume request travel as headers on the
  * WebSocket upgrade request (see connect.ts), not as frames, so a relay can
  * route and reject a connection before accepting the WebSocket.
@@ -25,6 +26,10 @@ export const FrameType = {
   RES_BODY: 0x13,
   RESET: 0x14,
   WINDOW: 0x15,
+  // WebSocket pass-through, see websocket.ts.
+  WS_OPEN: 0x20,
+  WS_MSG: 0x21,
+  WS_CLOSE: 0x22,
 } as const;
 
 export type FrameType = (typeof FrameType)[keyof typeof FrameType];

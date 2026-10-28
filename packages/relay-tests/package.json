@@ -1,0 +1,18 @@
+{
+  "name": "@via443/relay-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Integration suite that every relay adapter runs: the real client against a running relay",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "via443": "workspace:*",
+    "vitest": "^5.0.5",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

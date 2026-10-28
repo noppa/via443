@@ -31,6 +31,23 @@ _Status: in progress. This builds on `proxy-friendly-tunnel-initial-plan.md` and
 - After the upgrade, the relay's first frame is `WELCOME` with the tunnel ID, public URL and a fresh resume token. Everything after that is the binary frame protocol in `packages/protocol`.
 - A resume succeeds when the tunnel ID is still reserved (10 minutes after a disconnect), belongs to the same user and the resume token matches. Otherwise the client simply gets a new ID and says so loudly.
 
+## Flow control
+
+- Credit-based and per stream, like HTTP/2. Each direction of a stream starts with a 256 KiB window, which is how many body bytes the sender may have in flight that the receiver's consumer hasn't taken yet. Only body payload bytes count.
+- The receiver returns credit with `WINDOW` frames (a 4-byte increment) once its consumer has taken the data: on the relay when the visitor side reads the response body, on the client when the chunk has been written to the local server's socket. Credit goes back in batches of at least half a window.
+- A sender that overruns its window is a protocol error and the connection closes (1002).
+- There is no connection-level window: per-stream windows already bound what any one connection can buffer, and the WebSocket itself runs over TCP.
+- The window caps one stream's throughput at about window / round-trip time (256 KiB at 50 ms ≈ 5 MB/s). If that turns out to be too low, raise `INITIAL_WINDOW` or grow windows for streams that are being drained quickly.
+
+## WebSocket pass-through
+
+- A visitor's `Upgrade: websocket` request becomes a stream that starts with `WS_OPEN` (a request head). The client opens its own WebSocket to the local server, offering the visitor's subprotocols, and answers `RES_HEAD`:
+  - `101` with the chosen `sec-websocket-protocol`: the relay completes the visitor's upgrade with that subprotocol, and messages flow as `WS_MSG` frames.
+  - Any other status: the local server refused the upgrade. The stream continues as a plain HTTP response, which the relay passes on (e.g. a 403 from a dev server's token check).
+- Each hop negotiates its own WebSocket details (key, extensions such as compression, pings). Only messages and the close code and reason cross the tunnel.
+- Messages are split into `WS_MSG` fragments (`END` on the last, `BINARY` for binary messages) that count against the stream's flow-control windows. Credit for a message's last fragment comes back once the receiving side has handed the message to its socket. When messages queue up because there's no credit, the sending side pauses reading from its socket.
+- Messages are capped at 16 MiB. `WS_CLOSE` from either side ends the stream; the sender sends it after all the messages queued before it.
+
 ## Packages
 
 ```
@@ -51,6 +68,19 @@ apps/
 ```
 
 Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is the main reason to pick it.
+
+## Cloudflare adapter
+
+- The Worker routes by host. `<id>.<domain>` goes to the Durable Object named by the tunnel ID. On the apex, `/connect` checks the API token against D1 and hands the upgrade to a tunnel's Durable Object; everything else is the dashboard.
+- **Tunnel IDs are reserved in D1** (`tunnels` table) before a Durable Object takes the connection, since each tunnel lives in its own object and nothing else can see them all. The same table finds a user's or token's tunnels on revocation; the Worker then calls each object's `revoke()`.
+- **Resume:** the client's resume request goes to the old tunnel's object, which checks owner and resume token. If it refuses (expired, someone else's), the Worker falls back to a fresh ID, like the Node relay.
+- **The client socket uses the hibernation API**, so an idle tunnel isn't billed for wall time between the client's pings. The session is rebuilt when the object wakes; this is safe because the object only hibernates when no request or visitor WebSocket is in flight. Each client socket is tagged with a connection ID so a replaced socket's late events are ignored.
+- **Visitor WebSockets are ordinary (non-hibernating) sockets.** They keep the object in memory while open. Workers can't pause reading a WebSocket or report when a message has left, so visitor-side WebSocket backpressure is weaker than on Node; tunnel-side flow control still applies.
+- After a client disconnects, an alarm releases the tunnel ID (Durable Object storage and the D1 row) once the resume grace period has passed.
+- Gaps compared with the Node relay:
+  - No rate limit on requests to unknown tunnel IDs yet. Workers' rate-limiting binding can only count, not check, so a limit that also blocks the guesser's hits needs a different design (e.g. a per-IP Durable Object or a WAF rule).
+  - No idle timeout for clients that vanish without closing their socket; a resume replaces such a socket.
+  - Request bodies are limited by the Cloudflare plan (100 MB on Free and Pro).
 
 ## Database
 
@@ -86,8 +116,8 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - Packages export their TypeScript source directly. Node (≥ 22.18) strips types natively, so there is no build step while developing; the published client will get one.
 - `pnpm relay`: the self-host server on `localhost:8080`. Tunnels appear at `http://<id>.localhost:8080`, which browsers and curl resolve to 127.0.0.1 without any DNS setup. This is the fastest loop.
 - `pnpm via443 --port 3000 --server http://localhost:8080`: the client against the local relay.
-- `pnpm dev:cf` (later): `wrangler dev`, which runs the Worker and DO in Miniflare/workerd with a local D1.
-- The integration suite (`apps/node/test`) runs the real client against the real relay, including a TLS relay behind a local `CONNECT` proxy. Once the Cloudflare adapter exists, the same suite runs against it too, so the two adapters can't drift apart.
+- `pnpm dev:cf`: `wrangler dev`, which runs the Worker and its Durable Objects in workerd with a local D1, at `http://localhost:8787`.
+- The integration suite (`packages/relay-tests`) runs the real client against a running relay. Both adapters run it: `apps/node/test` against the Node relay (plus a TLS relay behind a local `CONNECT` proxy), and `apps/cloudflare/test` against `wrangler dev`, so the two can't drift apart. The suite only uses what a deployment offers: tokens are created and revoked through the dashboard, and network drops are simulated by cutting the TCP connection.
 
 ## Progress
 
@@ -95,10 +125,10 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [x] relay-core: tunnel session with streamed bodies in both directions, error mapping, X-Forwarded-* headers.
 - [x] Node relay: host routing, `/connect`, in-memory tunnel registry with resume, rate limit on unknown tunnels.
 - [x] Client: proxy-aware connect, request forwarding, keepalive, reconnect with resume, CLI.
-- [ ] Flow control (`WINDOW` frames); today a slow visitor or local server can make the other side buffer.
+- [x] Flow control: per-stream `WINDOW` credit, so a slow visitor or local server slows the other side down instead of making the relay or client buffer.
 - [x] Accounts: `packages/server` with SQL migrations, setup token, invites, access requests, sign-in links (shown to the admin or logged, not emailed yet), sessions, API tokens, and the dashboard. Wired into the Node relay.
 - [ ] Email delivery (SMTP / email API) for sign-in links and invites.
 - [ ] Rate limits on the sign-in and access-request forms.
-- [ ] Cloudflare adapter.
-- [ ] WebSocket pass-through (HMR).
+- [x] Cloudflare adapter: Worker, one Durable Object per tunnel, D1 accounts. Passes the shared suite under `wrangler dev`, and runs at via443.com: HTTP, streaming both ways, WebSockets and Vite HMR verified there, including after the tunnel's object has been idle.
+- [x] WebSocket pass-through (HMR): verified with Vite's HMR socket.
 - [ ] Multi-port, request log and inspector.
