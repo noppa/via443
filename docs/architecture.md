@@ -33,7 +33,7 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 ## Database
 
 - **Account DB (users, invites, access requests, tokens):** D1 on Cloudflare and a SQLite file on Node. Both speak SQLite, so one set of SQL migrations covers both. Use a query layer with both drivers, e.g. Drizzle (D1 + better-sqlite3) or Kysely. Access goes through a small repository interface, so the server package doesn't care which driver is behind it.
-- **Request log / inspector (later):** high-write and per-tunnel, so it stays out of the account DB. On Cloudflare it goes into the tunnel's Durable Object storage, which is SQLite-backed. On Node it goes into a separate table or file with a retention cap. Large bodies are truncated or stored as blobs (R2 on Cloudflare, disk on Node).
+- **Request log / inspector (later):** high-write and per-tunnel, so it stays out of the account DB. On Cloudflare it goes into the tunnel's Durable Object storage, which is SQLite-backed. On Node, request metadata (method, path, status, timing, headers) goes into a separate SQLite file (`logs.db`, WAL mode), apart from the account DB, so heavy log writes never contend with auth lookups and the file can be deleted at any time. Bodies are stored outside the database: in R2 on Cloudflare, and as plain files on disk on Node (`bodies/<tunnel>/<request>.{req,res}`), referenced from the metadata row. Retention is a single `DELETE ... WHERE ts < ?` plus removing the matching body files. Logging only metadata in plain files was considered and rejected, because the inspector needs filtering, paging and per-tunnel views that we would otherwise have to build by hand on top of JSONL.
 
 ## Accounts and tokens
 
