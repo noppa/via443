@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import tls from 'node:tls';
 import { ConnectRefusedError, openTunnel, type Tunnel } from 'via443';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { WebSocket, WebSocketServer } from 'ws';
 import { DatabaseSync } from 'node:sqlite';
 import { Accounts, createApp, logMailer } from '@via443/server';
 import { migrate, sqliteDb } from '@via443/server/node';
@@ -282,6 +283,144 @@ describe('tunnel over plain HTTP relay', () => {
 
     expect(tunnel.url).toBe(url);
     expect((await visit(relay.port, url, '/after')).status).toBe(200);
+  });
+});
+
+/**
+ * A local app with a WebSocket endpoint that greets with the upgrade request's
+ * details, then echoes. `/ws/refuse` answers 403 instead of upgrading, and a
+ * `close:<code>` message makes the server close with that code.
+ */
+async function startWsApp() {
+  const server = http.createServer();
+  const wss = new WebSocketServer({ noServer: true, handleProtocols: (offered) => (offered.has('v2') ? 'v2' : false) });
+  const closes: { code: number; reason: string }[] = [];
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url === '/ws/refuse') {
+      socket.end('HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\nset-cookie: a=1\r\nset-cookie: b=2\r\ncontent-length: 7\r\n\r\nno way!');
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.send(JSON.stringify({ url: req.url, host: req.headers.host, cookie: req.headers.cookie, forwardedHost: req.headers['x-forwarded-host'] }));
+      ws.on('message', (data, isBinary) => {
+        const text = isBinary ? '' : data.toString();
+        if (text.startsWith('close:')) ws.close(Number(text.slice(6)), 'bye');
+        else ws.send(data, { binary: isBinary });
+      });
+      ws.on('close', (code, reason) => closes.push({ code, reason: reason.toString() }));
+    });
+  });
+  cleanups.push(() => {
+    for (const ws of wss.clients) ws.terminate();
+  });
+  return { port: await listen(server), closes };
+}
+
+/** Opens a visitor WebSocket to `publicUrl` through the relay. */
+function visitWs(relayPort: number, publicUrl: string, path: string, protocols: string[] = [], headers: Record<string, string> = {}) {
+  const ws = new WebSocket(`ws://127.0.0.1:${relayPort}${path}`, protocols, { headers: { ...headers, host: new URL(publicUrl).host } });
+  const messages: (string | Buffer)[] = [];
+  const waiters: (() => void)[] = [];
+  ws.on('message', (data: Buffer, isBinary) => {
+    messages.push(isBinary ? data : data.toString());
+    for (const wake of waiters.splice(0)) wake();
+  });
+  ws.on('error', () => {});
+  cleanups.push(() => ws.terminate());
+  /** Waits until `count` messages have arrived in total. */
+  const received = async (count: number) => {
+    while (messages.length < count) await new Promise<void>((r) => waiters.push(r));
+    return messages;
+  };
+  return { ws, received };
+}
+
+describe('WebSockets through the tunnel', () => {
+  async function setup() {
+    const app = await startWsApp();
+    const relay = await startRelay();
+    const tunnel = await startTunnel({ port: app.port, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+    return { app, relay, tunnel };
+  }
+
+  it('passes text and binary messages both ways, with the negotiated subprotocol', async () => {
+    const { app, relay, tunnel } = await setup();
+    const { ws, received } = visitWs(relay.port, tunnel.url, '/ws/hmr?token=x', ['v1', 'v2'], { cookie: 'sid=1' });
+    await once(ws, 'open');
+    expect(ws.protocol).toBe('v2');
+
+    const [greeting] = await received(1);
+    expect(JSON.parse(greeting as string)).toEqual({
+      url: '/ws/hmr?token=x',
+      host: `127.0.0.1:${app.port}`,
+      cookie: 'sid=1',
+      forwardedHost: new URL(tunnel.url).host,
+    });
+
+    ws.send('hello');
+    ws.send(Buffer.from([1, 2, 3]));
+    ws.send('');
+    const messages = await received(4);
+    expect(messages.slice(1)).toEqual(['hello', Buffer.from([1, 2, 3]), '']);
+  });
+
+  it('carries messages larger than the flow-control window, in order', async () => {
+    const { relay, tunnel } = await setup();
+    const { ws, received } = visitWs(relay.port, tunnel.url, '/ws');
+    await once(ws, 'open');
+    const big = Buffer.alloc(3 * 1024 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = i % 251;
+    ws.send(big);
+    for (let i = 0; i < 200; i++) ws.send(`m${i}`);
+    const messages = await received(202);
+    expect(Buffer.compare(messages[1] as Buffer, big)).toBe(0);
+    expect(messages.slice(2)).toEqual(Array.from({ length: 200 }, (_, i) => `m${i}`));
+  });
+
+  it('passes close codes and reasons in both directions', async () => {
+    const { app, relay, tunnel } = await setup();
+    const fromServer = visitWs(relay.port, tunnel.url, '/ws');
+    await once(fromServer.ws, 'open');
+    fromServer.ws.send('close:4000');
+    const [code, reason] = (await once(fromServer.ws, 'close')) as [number, Buffer];
+    expect([code, reason.toString()]).toEqual([4000, 'bye']);
+
+    const fromVisitor = visitWs(relay.port, tunnel.url, '/ws');
+    await once(fromVisitor.ws, 'open');
+    fromVisitor.ws.close(4001, 'see you');
+    await once(fromVisitor.ws, 'close');
+    while (app.closes.length < 2) await new Promise((r) => setTimeout(r, 10));
+    expect(app.closes).toContainEqual({ code: 4001, reason: 'see you' });
+  });
+
+  it("passes on the local server's refusal to upgrade", async () => {
+    const { relay, tunnel } = await setup();
+    const { ws } = visitWs(relay.port, tunnel.url, '/ws/refuse');
+    const [, res] = (await once(ws, 'unexpected-response')) as [unknown, http.IncomingMessage];
+    expect(res.statusCode).toBe(403);
+    expect(res.headers['set-cookie']).toEqual(['a=1', 'b=2']);
+    let body = '';
+    for await (const chunk of res) body += chunk;
+    expect(body).toBe('no way!');
+  });
+
+  it('answers 502 when the local server is down, and closes sockets when the tunnel goes away', async () => {
+    const relay = await startRelay();
+    const closed = http.createServer();
+    const deadPort = await listen(closed);
+    await new Promise<void>((r) => closed.close(() => r()));
+    const dead = await startTunnel({ port: deadPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+    const refused = visitWs(relay.port, dead.url, '/ws');
+    const [, res] = (await once(refused.ws, 'unexpected-response')) as [unknown, http.IncomingMessage];
+    expect(res.statusCode).toBe(502);
+
+    const app = await startWsApp();
+    const tunnel = await startTunnel({ port: app.port, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+    const { ws } = visitWs(relay.port, tunnel.url, '/ws');
+    await once(ws, 'open');
+    await tunnel.close();
+    const [code] = (await once(ws, 'close')) as [number];
+    expect(code).toBe(1001);
   });
 });
 

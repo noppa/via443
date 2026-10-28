@@ -39,6 +39,15 @@ _Status: in progress. This builds on `proxy-friendly-tunnel-initial-plan.md` and
 - There is no connection-level window: per-stream windows already bound what any one connection can buffer, and the WebSocket itself runs over TCP.
 - The window caps one stream's throughput at about window / round-trip time (256 KiB at 50 ms ≈ 5 MB/s). If that turns out to be too low, raise `INITIAL_WINDOW` or grow windows for streams that are being drained quickly.
 
+## WebSocket pass-through
+
+- A visitor's `Upgrade: websocket` request becomes a stream that starts with `WS_OPEN` (a request head). The client opens its own WebSocket to the local server, offering the visitor's subprotocols, and answers `RES_HEAD`:
+  - `101` with the chosen `sec-websocket-protocol`: the relay completes the visitor's upgrade with that subprotocol, and messages flow as `WS_MSG` frames.
+  - Any other status: the local server refused the upgrade. The stream continues as a plain HTTP response, which the relay passes on (e.g. a 403 from a dev server's token check).
+- Each hop negotiates its own WebSocket details (key, extensions such as compression, pings). Only messages and the close code and reason cross the tunnel.
+- Messages are split into `WS_MSG` fragments (`END` on the last, `BINARY` for binary messages) that count against the stream's flow-control windows. Credit for a message's last fragment comes back once the receiving side has handed the message to its socket. When messages queue up because there's no credit, the sending side pauses reading from its socket.
+- Messages are capped at 16 MiB. `WS_CLOSE` from either side ends the stream; the sender sends it after all the messages queued before it.
+
 ## Packages
 
 ```
@@ -108,5 +117,5 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [ ] Email delivery (SMTP / email API) for sign-in links and invites.
 - [ ] Rate limits on the sign-in and access-request forms.
 - [ ] Cloudflare adapter.
-- [ ] WebSocket pass-through (HMR).
+- [x] WebSocket pass-through (HMR): verified with Vite's HMR socket.
 - [ ] Multi-port, request log and inspector.

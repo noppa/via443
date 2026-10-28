@@ -1,8 +1,11 @@
 import http from 'node:http';
 import {
+  closeArgs,
   decodeRequestHead,
   decodeReset,
   decodeWindow,
+  decodeWsClose,
+  decodeWsOpen,
   encodeBody,
   encodeReset,
   encodeResponseHead,
@@ -12,11 +15,15 @@ import {
   type HeaderList,
   isEnd,
   MAX_CHUNK_SIZE,
+  MAX_WS_MESSAGE,
   ReceiveWindow,
   type RequestHead,
   SendWindow,
   stripHopByHop,
+  WsReceiver,
+  WsSender,
 } from '@via443/protocol';
+import WebSocket from 'ws';
 
 export interface LocalTarget {
   host: string;
@@ -41,6 +48,12 @@ interface LocalStream {
   downloadWindow: SendWindow;
 }
 
+interface LocalWebSocket {
+  ws: WebSocket;
+  sender: WsSender;
+  receiver: WsReceiver;
+}
+
 const NO_BODY_STATUSES = new Set([204, 205, 304]);
 
 /**
@@ -49,6 +62,7 @@ const NO_BODY_STATUSES = new Set([204, 205, 304]);
  */
 export class LocalForwarder {
   readonly #streams = new Map<number, LocalStream>();
+  readonly #webSockets = new Map<number, LocalWebSocket>();
   readonly #target: LocalTarget;
   readonly #send: (frame: Frame) => void;
   readonly #onRequest: (entry: RequestLogEntry) => void;
@@ -60,7 +74,7 @@ export class LocalForwarder {
   }
 
   get activeStreams(): number {
-    return this.#streams.size;
+    return this.#streams.size + this.#webSockets.size;
   }
 
   /** Handles a per-stream frame from the relay. */
@@ -88,6 +102,7 @@ export class LocalForwarder {
       case FrameType.WINDOW: {
         const increment = decodeWindow(frame);
         this.#streams.get(frame.streamId)?.downloadWindow.grant(increment);
+        this.#webSockets.get(frame.streamId)?.sender.window.grant(increment);
         return;
       }
       case FrameType.RESET: {
@@ -95,12 +110,26 @@ export class LocalForwarder {
         this.#abort(frame.streamId);
         return;
       }
+      case FrameType.WS_OPEN:
+        this.#openWebSocket(frame.streamId, decodeWsOpen(frame));
+        return;
+      case FrameType.WS_MSG:
+        this.#webSockets.get(frame.streamId)?.receiver.receive(frame);
+        return;
+      case FrameType.WS_CLOSE: {
+        const close = decodeWsClose(frame);
+        const local = this.#webSockets.get(frame.streamId);
+        if (!local) return;
+        this.#closeWebSocket(frame.streamId);
+        local.ws.close(...closeArgs(close));
+        return;
+      }
     }
   }
 
   /** Drops every open stream, e.g. because the tunnel connection was lost. */
   abortAll(): void {
-    for (const streamId of [...this.#streams.keys()]) this.#abort(streamId);
+    for (const streamId of [...this.#streams.keys(), ...this.#webSockets.keys()]) this.#abort(streamId);
   }
 
   #start(streamId: number, head: RequestHead, end: boolean): void {
@@ -124,27 +153,122 @@ export class LocalForwarder {
     };
     this.#streams.set(streamId, stream);
 
-    request.on('response', (response) => {
-      stream.response = response;
-      const noBody = head.method === 'HEAD' || NO_BODY_STATUSES.has(response.statusCode ?? 0);
-      const headers = stripHopByHop(pairs(response.rawHeaders));
-      this.#send(encodeResponseHead(streamId, { status: response.statusCode ?? 502, headers }, noBody));
-      if (noBody) {
-        response.resume();
-        this.#complete(streamId);
-        log(response.statusCode);
-        return;
-      }
-      void this.#sendBody(streamId, stream, response).then(
-        (completed) => {
-          if (completed) log(response.statusCode);
-        },
-        (err: Error) => this.#fail(streamId, err, () => log(response.statusCode, err.message)),
-      );
-    });
-
+    request.on('response', (response) => this.#respond(streamId, stream, head, response, log));
     request.on('error', (err) => this.#fail(streamId, err, () => log(undefined, describeError(err))));
     if (end) request.end();
+  }
+
+  /** Sends the local server's response back through the tunnel. */
+  #respond(
+    streamId: number,
+    stream: LocalStream,
+    head: RequestHead,
+    response: http.IncomingMessage,
+    log: (status: number | undefined, error?: string) => void,
+  ): void {
+    stream.response = response;
+    const noBody = head.method === 'HEAD' || NO_BODY_STATUSES.has(response.statusCode ?? 0);
+    const headers = stripHopByHop(pairs(response.rawHeaders));
+    this.#send(encodeResponseHead(streamId, { status: response.statusCode ?? 502, headers }, noBody));
+    if (noBody) {
+      response.resume();
+      this.#complete(streamId);
+      log(response.statusCode);
+      return;
+    }
+    void this.#sendBody(streamId, stream, response).then(
+      (completed) => {
+        if (completed) log(response.statusCode);
+      },
+      (err: Error) => this.#fail(streamId, err, () => log(response.statusCode, err.message)),
+    );
+  }
+
+  /**
+   * Opens a WebSocket to the local server for a visitor's upgrade request and
+   * answers RES_HEAD 101 once it's open. If the local server answers with
+   * anything other than an upgrade, that response is passed on instead.
+   */
+  #openWebSocket(streamId: number, head: RequestHead): void {
+    const started = performance.now();
+    const log = (status: number | undefined, error?: string) =>
+      this.#onRequest({ method: head.method, path: head.path, status, durationMs: performance.now() - started, error });
+
+    const protocols: string[] = [];
+    const headers: Record<string, string[]> = {};
+    for (const [name, value] of localRequestHeaders(head.headers, this.#target)) {
+      const lower = name.toLowerCase();
+      if (lower === 'sec-websocket-protocol') {
+        protocols.push(...value.split(',').map((p) => p.trim()).filter(Boolean));
+      } else if (!lower.startsWith('sec-websocket-')) {
+        // Key, version and extensions belong to the visitor's hop; ws negotiates its own.
+        (headers[lower] ??= []).push(value);
+      }
+    }
+
+    const host = this.#target.host.includes(':') ? `[${this.#target.host}]` : this.#target.host;
+    const ws = new WebSocket(`ws://${host}:${this.#target.port}${head.path}`, protocols, {
+      headers,
+      perMessageDeflate: false,
+      maxPayload: MAX_WS_MESSAGE,
+    });
+    const local: LocalWebSocket = {
+      ws,
+      sender: new WsSender(
+        streamId,
+        (frame) => {
+          this.#send(frame);
+          if (frame.type === FrameType.WS_CLOSE) this.#closeWebSocket(streamId);
+        },
+        (paused) => (paused ? ws.pause() : ws.resume()),
+      ),
+      receiver: new WsReceiver(streamId, this.#send, (data, sent) => ws.send(data, () => sent())),
+    };
+    this.#webSockets.set(streamId, local);
+
+    let opened = false;
+    let failure: string | undefined;
+    ws.on('open', () => {
+      opened = true;
+      const headers: HeaderList = ws.protocol ? [['sec-websocket-protocol', ws.protocol]] : [];
+      this.#send(encodeResponseHead(streamId, { status: 101, headers }, false));
+      log(101);
+    });
+    ws.on('unexpected-response', (request, response) => {
+      // Not an upgrade: carry on as a plain HTTP stream.
+      this.#webSockets.delete(streamId);
+      const stream: LocalStream = {
+        request,
+        done: false,
+        uploadWindow: new ReceiveWindow(),
+        downloadWindow: new SendWindow(),
+      };
+      this.#streams.set(streamId, stream);
+      this.#respond(streamId, stream, head, response, log);
+    });
+    ws.on('message', (data: Buffer, isBinary) => local.sender.message(isBinary ? data : data.toString()));
+    ws.on('error', (err) => (failure = describeError(err)));
+    ws.on('close', (code, reason) => {
+      if (!this.#webSockets.has(streamId)) return;
+      if (!opened) {
+        const message = failure ?? 'connection closed';
+        this.#send(encodeReset(streamId, { code: 'upstream_error', message }));
+        this.#closeWebSocket(streamId);
+        log(undefined, message);
+        return;
+      }
+      local.receiver.abort();
+      local.sender.close({ code, reason: reason.toString() });
+    });
+  }
+
+  /** Forgets a WebSocket stream; nothing more is sent or expected on it. */
+  #closeWebSocket(streamId: number): void {
+    const local = this.#webSockets.get(streamId);
+    if (!local) return;
+    this.#webSockets.delete(streamId);
+    local.sender.abort();
+    local.receiver.abort();
   }
 
   /**
@@ -175,6 +299,12 @@ export class LocalForwarder {
   }
 
   #abort(streamId: number): void {
+    const local = this.#webSockets.get(streamId);
+    if (local) {
+      this.#closeWebSocket(streamId);
+      local.ws.terminate();
+      return;
+    }
     const stream = this.#streams.get(streamId);
     if (!stream) return;
     this.#complete(streamId);

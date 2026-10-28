@@ -4,16 +4,20 @@ import {
   decodeRequestHead,
   decodeReset,
   decodeWindow,
+  decodeWsClose,
+  decodeWsOpen,
   encodeBody,
   encodeFrame,
   encodeReset,
   encodeResponseHead,
   encodeWindow,
+  encodeWsClose,
   type Frame,
   FrameType,
   INITIAL_WINDOW,
   isEnd,
   PROTOCOL_VERSION,
+  WsFlags,
 } from '@via443/protocol';
 import { describe, expect, it } from 'vitest';
 import {
@@ -23,6 +27,8 @@ import {
   matchHost,
   parseConnectRequest,
   TunnelSession,
+  TunnelWebSocket,
+  type VisitorSocket,
 } from '../src/index.ts';
 
 class FakeSocket {
@@ -220,6 +226,110 @@ describe('TunnelSession', () => {
     session.receive(new Uint8Array([0x7f, 0, 0, 0, 0, 0]));
     expect(socket.closedWith?.[0]).toBe(1002);
     expect(session.isClosed).toBe(true);
+  });
+});
+
+describe('TunnelSession WebSockets', () => {
+  const upgradeRequest = () =>
+    new Request('https://abcd1234.via443.com/hmr', {
+      headers: { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-protocol': 'vite-hmr' },
+    });
+
+  class FakeVisitor implements VisitorSocket {
+    sent: (string | Uint8Array)[] = [];
+    closedWith: [number | undefined, string | undefined] | undefined;
+    send(data: string | Uint8Array, sent: () => void) {
+      this.sent.push(data);
+      sent();
+    }
+    close(code?: number, reason?: string) {
+      this.closedWith = [code, reason];
+    }
+  }
+
+  async function upgraded() {
+    const s = setup();
+    const pending = s.session.openWebSocket(upgradeRequest(), ctx);
+    const open = s.socket.sent[0]!;
+    s.reply(encodeResponseHead(open.streamId, { status: 101, headers: [['sec-websocket-protocol', 'vite-hmr']] }, false));
+    const ws = await pending;
+    if (!(ws instanceof TunnelWebSocket)) throw new Error('expected an upgrade');
+    return { ...s, ws, streamId: open.streamId, open };
+  }
+
+  it('sends WS_OPEN and hands out the socket once the client answers 101', async () => {
+    const { ws, open, session } = await upgraded();
+    expect(open.type).toBe(FrameType.WS_OPEN);
+    const head = decodeWsOpen(open);
+    expect(head.path).toBe('/hmr');
+    expect(head.headers).toContainEqual(['sec-websocket-protocol', 'vite-hmr']);
+    expect(head.headers.map(([n]) => n)).not.toContain('upgrade');
+    expect(ws.protocol).toBe('vite-hmr');
+    expect(session.activeStreams).toBe(1);
+  });
+
+  it('delivers messages that arrive before the visitor is attached, then relays both ways', async () => {
+    const { ws, streamId, reply, socket, session } = await upgraded();
+    reply({ type: FrameType.WS_MSG, flags: WsFlags.END, streamId, payload: text('early') });
+    reply({ type: FrameType.WS_MSG, flags: WsFlags.END | WsFlags.BINARY, streamId, payload: new Uint8Array([9]) });
+    const visitor = new FakeVisitor();
+    ws.attach(visitor);
+    expect(visitor.sent).toEqual(['early', new Uint8Array([9])]);
+
+    ws.message('hi');
+    await tick();
+    const msg = socket.sent.at(-1)!;
+    expect(msg.type).toBe(FrameType.WS_MSG);
+    expect(msg.flags).toBe(WsFlags.END);
+    expect(new TextDecoder().decode(msg.payload)).toBe('hi');
+
+    reply(encodeWsClose(streamId, { code: 4000, reason: 'bye' }));
+    expect(visitor.closedWith).toEqual([4000, 'bye']);
+    expect(session.activeStreams).toBe(0);
+  });
+
+  it('sends WS_CLOSE after queued messages when the visitor closes', async () => {
+    const { ws, socket, session } = await upgraded();
+    ws.attach(new FakeVisitor());
+    ws.message('last words');
+    ws.closed(1001, 'tab closed');
+    await tick();
+    const [msg, close] = socket.sent.slice(-2);
+    expect(msg!.type).toBe(FrameType.WS_MSG);
+    expect(decodeWsClose(close!)).toEqual({ code: 1001, reason: 'tab closed' });
+    expect(session.activeStreams).toBe(0);
+  });
+
+  it('closes visitor sockets when the client disconnects', async () => {
+    const { ws, session } = await upgraded();
+    const visitor = new FakeVisitor();
+    ws.attach(visitor);
+    session.closed();
+    expect(visitor.closedWith?.[0]).toBe(1001);
+  });
+
+  it("returns the local server's refusal as a plain response", async () => {
+    const { socket, session, reply } = setup();
+    const pending = session.openWebSocket(upgradeRequest(), ctx);
+    const streamId = socket.sent[0]!.streamId;
+    reply(encodeResponseHead(streamId, { status: 403, headers: [] }, false));
+    reply(encodeBody(FrameType.RES_BODY, streamId, text('nope'), true));
+    const res = await pending;
+    if (!(res instanceof Response)) throw new Error('expected a response');
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('nope');
+  });
+
+  it('rejects 101 for plain requests and WebSocket frames before the upgrade', async () => {
+    const plain = setup();
+    const pending = plain.session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    plain.reply(encodeResponseHead(plain.socket.sent[0]!.streamId, { status: 101, headers: [] }, false));
+    expect((await pending).status).toBe(502);
+
+    const early = setup();
+    void early.session.openWebSocket(upgradeRequest(), ctx);
+    early.reply({ type: FrameType.WS_MSG, flags: WsFlags.END, streamId: early.socket.sent[0]!.streamId, payload: text('x') });
+    expect(early.socket.closedWith?.[0]).toBe(1002);
   });
 });
 

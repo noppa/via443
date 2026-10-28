@@ -26,6 +26,10 @@ export const FrameType = {
   RES_BODY: 0x13,
   RESET: 0x14,
   WINDOW: 0x15,
+  // WebSocket pass-through, see websocket.ts.
+  WS_OPEN: 0x20,
+  WS_MSG: 0x21,
+  WS_CLOSE: 0x22,
 } as const;
 
 export type FrameType = (typeof FrameType)[keyof typeof FrameType];

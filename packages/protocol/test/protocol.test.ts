@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  closeArgs,
+  decodeWsClose,
+  decodeWsOpen,
+  encodeWsClose,
+  encodeWsOpen,
+  type Frame,
+  MAX_WS_MESSAGE,
+  WsFlags,
+  WsReceiver,
+  WsSender,
   decodeFrame,
   decodeGoAway,
   decodeRequestHead,
@@ -172,6 +182,101 @@ describe('flow control', () => {
     expect(window.consumed(1)).toBe(INITIAL_WINDOW / 2);
     window.received(INITIAL_WINDOW / 2);
     expect(() => window.received(1)).toThrow(/exceeded/);
+  });
+});
+
+describe('WebSocket pass-through', () => {
+  it('round-trips WS_OPEN and WS_CLOSE', () => {
+    const head = { method: 'GET', path: '/hmr', headers: [['sec-websocket-protocol', 'vite-hmr']] as [string, string][] };
+    expect(decodeWsOpen(roundTrip(encodeWsOpen(3, head)))).toEqual(head);
+    expect(decodeWsClose(roundTrip(encodeWsClose(3, { code: 4000, reason: 'bye' })))).toEqual({ code: 4000, reason: 'bye' });
+    expect(decodeWsClose(roundTrip(encodeWsClose(3, {})))).toEqual({});
+  });
+
+  it('only passes close codes that WebSocket.close() accepts', () => {
+    expect(closeArgs({ code: 1000, reason: 'ok' })).toEqual([1000, 'ok']);
+    expect(closeArgs({ code: 4999 })).toEqual([4999, '']);
+    for (const code of [undefined, 1005, 1006, 1015, 2000, 5000]) expect(closeArgs({ code })).toEqual([]);
+    expect(new TextEncoder().encode(closeArgs({ code: 1000, reason: 'é'.repeat(100) })[1]).byteLength).toBeLessThanOrEqual(123);
+  });
+
+  /** A sender wired straight into a receiver, as if over the tunnel. */
+  function pipe() {
+    const delivered: (string | Uint8Array)[] = [];
+    const frames: Frame[] = [];
+    let release: (() => void)[] = [];
+    let hold = false;
+    const receiver = new WsReceiver(
+      1,
+      (frame) => sender.window.grant(decodeWindow(frame)),
+      (data, sent) => {
+        delivered.push(data);
+        if (hold) release.push(sent);
+        else sent();
+      },
+    );
+    const pauses: boolean[] = [];
+    const sender = new WsSender(
+      1,
+      (frame) => {
+        frames.push(frame);
+        if (frame.type === FrameType.WS_MSG) receiver.receive(decodeFrame(encodeFrame(frame)));
+      },
+      (paused) => pauses.push(paused),
+    );
+    return {
+      sender,
+      delivered,
+      frames,
+      pauses,
+      hold: (on: boolean) => {
+        hold = on;
+        if (!on) for (const sent of release.splice(0)) sent();
+      },
+    };
+  }
+  const settle = async () => {
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+  };
+
+  it('fragments messages and reassembles them, text and binary', async () => {
+    const p = pipe();
+    const big = new Uint8Array(INITIAL_WINDOW * 3).map((_, i) => i % 7);
+    p.sender.message('héllo');
+    p.sender.message(big);
+    p.sender.message('');
+    p.sender.close({ code: 1000 });
+    await settle();
+    expect(p.delivered).toEqual(['héllo', big, '']);
+    expect(p.frames.filter((f) => f.type === FrameType.WS_MSG && (f.flags & WsFlags.END) !== 0)).toHaveLength(3);
+    expect(p.frames.every((f) => f.payload.byteLength <= 64 * 1024)).toBe(true);
+    expect(p.frames.at(-1)!.type).toBe(FrameType.WS_CLOSE);
+  });
+
+  it('holds messages back while the receiving side is slow, and pauses the source', async () => {
+    const p = pipe();
+    p.hold(true);
+    const chunk = new Uint8Array(32 * 1024);
+    for (let i = 0; i < 64; i++) p.sender.message(chunk);
+    await settle();
+    expect(p.delivered.length).toBeLessThan(64);
+    expect(p.pauses).toEqual([true]);
+    p.hold(false);
+    for (let i = 0; i < 20 && p.delivered.length < 64; i++) {
+      await settle();
+      p.hold(false);
+    }
+    expect(p.delivered).toHaveLength(64);
+    expect(p.pauses).toEqual([true, false]);
+  });
+
+  it('rejects oversized messages', () => {
+    const receiver = new WsReceiver(1, () => {}, () => {});
+    const fragment = (end: boolean) =>
+      ({ type: FrameType.WS_MSG, flags: end ? WsFlags.END : 0, streamId: 1, payload: new Uint8Array(64 * 1024) }) as Frame;
+    expect(() => {
+      for (let i = 0; i <= MAX_WS_MESSAGE / (64 * 1024); i++) receiver.receive(fragment(false));
+    }).toThrow(/WebSocket message over/);
   });
 });
 

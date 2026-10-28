@@ -2,7 +2,7 @@ import { once } from 'node:events';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { Readable } from 'node:stream';
-import { CONNECT_PATH, PROTOCOL_VERSION } from '@via443/protocol';
+import { CONNECT_PATH, MAX_WS_MESSAGE, PROTOCOL_VERSION } from '@via443/protocol';
 import {
   connectErrorResponse,
   matchHost,
@@ -10,7 +10,7 @@ import {
   TunnelSession,
   tunnelErrorResponse,
 } from '@via443/relay-core';
-import { WebSocketServer } from 'ws';
+import { type WebSocket, WebSocketServer } from 'ws';
 import { RateLimiter } from './rate-limit.ts';
 import { type TunnelOwner, TunnelRegistry } from './registry.ts';
 
@@ -51,6 +51,13 @@ export function createRelay(config: RelayConfig): Relay {
   const registry = config.registry ?? new TunnelRegistry(config.resumeGraceMs);
   const unknownTunnelHits = new RateLimiter(30, 10 * 60_000);
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+  /** Subprotocol the local server picked, per visitor upgrade request. */
+  const visitorProtocols = new WeakMap<http.IncomingMessage, string>();
+  const visitorWss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_WS_MESSAGE,
+    handleProtocols: (_offered, req) => visitorProtocols.get(req) ?? false,
+  });
 
   const clientIp = (req: http.IncomingMessage): string | undefined => {
     if (config.trustProxy) {
@@ -84,14 +91,9 @@ export function createRelay(config: RelayConfig): Relay {
     }
 
     const ip = clientIp(req);
-    if (ip && unknownTunnelHits.isLimited(ip)) {
-      await writeResponse(res, tunnelErrorResponse(429, 'too many requests to unknown tunnels, try again later.'));
-      return;
-    }
-    const session = registry.get(host.tunnelId);
-    if (!session) {
-      if (ip) unknownTunnelHits.hit(ip);
-      await writeResponse(res, tunnelErrorResponse(404, 'no tunnel is connected at this address.'));
+    const session = findTunnel(host.tunnelId, ip);
+    if (session instanceof Response) {
+      await writeResponse(res, session);
       return;
     }
 
@@ -106,6 +108,19 @@ export function createRelay(config: RelayConfig): Relay {
     await writeResponse(res, response);
   }
 
+  /** The session for a tunnel host, or the error to answer; rate-limits guessing at tunnel IDs. */
+  function findTunnel(tunnelId: string, ip: string | undefined): TunnelSession | Response {
+    if (ip && unknownTunnelHits.isLimited(ip)) {
+      return tunnelErrorResponse(429, 'too many requests to unknown tunnels, try again later.');
+    }
+    const session = registry.get(tunnelId);
+    if (!session) {
+      if (ip) unknownTunnelHits.hit(ip);
+      return tunnelErrorResponse(404, 'no tunnel is connected at this address.');
+    }
+    return session;
+  }
+
   server.on('upgrade', (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
     void handleUpgrade(req, socket, head).catch((err: unknown) => {
       console.error('via443: upgrade failed', err);
@@ -117,8 +132,7 @@ export function createRelay(config: RelayConfig): Relay {
     const host = matchHost(req.headers.host, config.domain);
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (host.kind === 'tunnel') {
-      // WebSocket pass-through to the local server is milestone 5.
-      writeRawResponse(socket, tunnelErrorResponse(501, 'WebSocket connections through tunnels are not supported yet.'));
+      await handleVisitorUpgrade(host.tunnelId, req, socket, head);
       return;
     }
     if (host.kind !== 'apex' || path !== CONNECT_PATH) {
@@ -163,11 +177,51 @@ export function createRelay(config: RelayConfig): Relay {
     session.welcome({ version: PROTOCOL_VERSION, tunnelId, url: `${config.scheme}://${tunnelId}.${config.domain}`, resumeToken });
   }
 
+  /** Passes a visitor's WebSocket through the tunnel, once the local server has accepted it. */
+  async function handleVisitorUpgrade(tunnelId: string, req: http.IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const ip = clientIp(req);
+    const session = findTunnel(tunnelId, ip);
+    if (session instanceof Response) {
+      writeRawResponse(socket, session);
+      return;
+    }
+
+    const aborted = new AbortController();
+    const onSocketClose = () => aborted.abort();
+    socket.once('close', onSocketClose);
+    const result = await session.openWebSocket(toRequest(req, config.scheme, aborted.signal), {
+      proto: config.scheme,
+      clientIp: ip,
+    });
+    socket.off('close', onSocketClose);
+    if (result instanceof Response) {
+      writeRawResponse(socket, result);
+      return;
+    }
+    if (socket.destroyed) {
+      result.closed(1001, 'visitor went away');
+      return;
+    }
+
+    if (result.protocol) visitorProtocols.set(req, result.protocol);
+    const ws = await new Promise<WebSocket>((resolve) => visitorWss.handleUpgrade(req, socket, head, resolve));
+    result.attach({
+      send: (data, sent) => ws.send(data, () => sent()),
+      close: (code, reason) => ws.close(code, reason),
+      pause: () => ws.pause(),
+      resume: () => ws.resume(),
+    });
+    ws.on('message', (data: Buffer, isBinary) => result.message(isBinary ? data : data.toString()));
+    ws.on('close', (code, reason) => result.closed(code, reason.toString()));
+    ws.on('error', () => ws.terminate());
+  }
+
   return {
     server,
     registry,
     async close() {
       for (const ws of wss.clients) ws.terminate();
+      for (const ws of visitorWss.clients) ws.terminate();
       server.closeAllConnections();
       server.close();
       await once(server, 'close');
@@ -234,12 +288,23 @@ async function writeResponse(res: http.ServerResponse, response: Response): Prom
   }
 }
 
-/** Writes a complete HTTP response to a socket that was not upgraded. */
+/**
+ * Writes a complete HTTP response to a socket that was not upgraded. Buffers
+ * the body: these are error pages, or a local server's refusal of an upgrade.
+ */
 function writeRawResponse(socket: Duplex, response: Response): void {
-  void response.text().then((body) => {
-    const lines = [`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ''}`];
-    for (const [name, value] of response.headers) lines.push(`${name}: ${value}`);
-    lines.push(`content-length: ${Buffer.byteLength(body)}`, 'connection: close');
-    socket.end(`${lines.join('\r\n')}\r\n\r\n${body}`);
-  });
+  void response.arrayBuffer().then(
+    (body) => {
+      if (socket.destroyed) return;
+      const lines = [`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ''}`];
+      for (const [name, value] of response.headers) {
+        if (name !== 'set-cookie' && name !== 'content-length' && name !== 'connection') lines.push(`${name}: ${value}`);
+      }
+      for (const cookie of response.headers.getSetCookie()) lines.push(`set-cookie: ${cookie}`);
+      lines.push(`content-length: ${body.byteLength}`, 'connection: close');
+      socket.write(`${lines.join('\r\n')}\r\n\r\n`);
+      socket.end(Buffer.from(body));
+    },
+    () => socket.destroy(),
+  );
 }
