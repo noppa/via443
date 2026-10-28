@@ -65,6 +65,3 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - `pnpm dev:node`: the self-host server. This is the fastest loop and the one used for end-to-end tests behind a `CONNECT` proxy.
 - `pnpm dev:cf`: `wrangler dev`, which runs the Worker and DO in Miniflare/workerd with a local D1.
 - The integration suite runs against both targets, so the two adapters can't drift apart.
-
-## Open questions
-
