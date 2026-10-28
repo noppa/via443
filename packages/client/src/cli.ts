@@ -2,6 +2,10 @@
 import { parseArgs } from 'node:util';
 import { ConnectRefusedError, DEFAULT_SERVER, openTunnel } from './tunnel.ts';
 
+/** Set by the build; absent when running from source. */
+declare const VIA443_VERSION: string | undefined;
+const VERSION = typeof VIA443_VERSION === 'string' ? VIA443_VERSION : 'dev';
+
 const USAGE = `Usage: via443 --port <port> [options]
 
 Exposes a local server at a public https URL. Only needs outbound HTTPS on
@@ -13,6 +17,7 @@ Options:
       --server <server>  relay domain or URL (default: ${DEFAULT_SERVER}, env: VIA443_SERVER)
       --token <token>    API token (env: VIA443_TOKEN)
   -q, --quiet            don't log requests
+  -v, --version          show the version
   -h, --help             show this help
 `;
 
@@ -32,6 +37,7 @@ async function main(): Promise<void> {
         token: { type: 'string' },
         quiet: { type: 'boolean', short: 'q', default: false },
         help: { type: 'boolean', short: 'h', default: false },
+        version: { type: 'boolean', short: 'v', default: false },
       },
       strict: true,
     }));
@@ -39,6 +45,10 @@ async function main(): Promise<void> {
     fail(`${(err as Error).message}\n\n${USAGE}`);
   }
 
+  if (values.version) {
+    process.stdout.write(`${VERSION}\n`);
+    return;
+  }
   if (values.help) {
     process.stdout.write(USAGE);
     return;

@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import {
   CONNECT_PATH,
-  type ConnectError,
   ConnectHeader,
   decodeFrame,
   decodeGoAway,
@@ -16,8 +15,9 @@ import {
   type Welcome,
 } from '@via443/protocol';
 import WebSocket from 'ws';
-import { LocalForwarder, type RequestLogEntry } from './forward.ts';
+import { LocalForwarder } from './forward.ts';
 import { openSocket, proxyFor, trustedCAs } from './network.ts';
+import type { ConnectRefusal, RequestLogEntry } from './types.ts';
 
 export const DEFAULT_SERVER = 'via443.com';
 
@@ -53,7 +53,7 @@ export class ConnectRefusedError extends Error {
   override name = 'ConnectRefusedError';
   readonly status: number;
   readonly code: string;
-  constructor(status: number, body: Partial<ConnectError>) {
+  constructor(status: number, body: ConnectRefusal) {
     super(body.message ?? `relay answered HTTP ${status}`);
     this.status = status;
     this.code = body.code ?? 'http_error';
@@ -304,9 +304,9 @@ function waitForWelcome(ws: WebSocket): Promise<Welcome> {
         if (body.length < 16 * 1024) body += chunk;
       });
       res.on('end', () => {
-        let parsed: Partial<ConnectError> = {};
+        let parsed: ConnectRefusal = {};
         try {
-          parsed = JSON.parse(body) as Partial<ConnectError>;
+          parsed = JSON.parse(body) as ConnectRefusal;
         } catch {
           // Not our relay, or a proxy error page.
         }

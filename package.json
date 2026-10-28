@@ -11,10 +11,12 @@
     "relay": "pnpm --filter @via443/node start",
     "via443": "node packages/client/src/cli.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p apps/cloudflare",
-    "dev:cf": "pnpm --filter @via443/cloudflare dev"
+    "dev:cf": "pnpm --filter @via443/cloudflare dev",
+    "smoke:pack": "node scripts/smoke-pack.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "@via443/server": "workspace:*",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   }

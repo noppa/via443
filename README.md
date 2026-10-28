@@ -32,6 +32,17 @@ pnpm via443 --port 3000 --server http://localhost:8080 --token v443_...
 
 Sign-in links and invites aren't emailed yet: the admin dashboard shows the link for you to send by hand, and links from the sign-in form are written to the relay's log.
 
+### Publishing the client
+
+The `via443` npm package is built from `packages/client` (esbuild bundles the private protocol package into it; `ws` stays a dependency):
+
+```sh
+pnpm smoke:pack                        # pack, install the tarball with npm, run its CLI and library through a tunnel
+cd packages/client && pnpm publish     # bump "version" first; pnpm swaps in the dist/ entry points
+```
+
+Publish with pnpm, not npm: the `dist/` entry points come from `publishConfig`, which only pnpm applies to `bin` and `exports`.
+
 ### Relay settings (self-hosted)
 
 | Variable | Default | Meaning |

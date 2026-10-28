@@ -1,8 +1,23 @@
 {
   "name": "via443",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Expose a local dev server through a tunnel that only needs HTTPS on port 443, even behind a CONNECT proxy",
+  "keywords": [
+    "tunnel",
+    "localhost",
+    "proxy",
+    "ngrok",
+    "https-proxy",
+    "websocket",
+    "dev-server"
+  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noppa/via443.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://via443.com",
   "type": "module",
   "bin": {
     "via443": "./src/cli.ts"
@@ -10,14 +25,34 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "dist"
+  ],
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "bin": {
+      "via443": "./dist/cli.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
   },
   "dependencies": {
-    "@via443/protocol": "workspace:*",
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.2"
+    "@via443/protocol": "workspace:*",
+    "@types/ws": "^8.18.2",
+    "esbuild": "0.28.2"
   }
 }

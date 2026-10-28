@@ -24,19 +24,7 @@ import {
   WsSender,
 } from '@via443/protocol';
 import WebSocket from 'ws';
-
-export interface LocalTarget {
-  host: string;
-  port: number;
-}
-
-export interface RequestLogEntry {
-  method: string;
-  path: string;
-  status: number | undefined;
-  durationMs: number;
-  error?: string;
-}
+import type { LocalTarget, RequestLogEntry } from './types.ts';
 
 interface LocalStream {
   request: http.ClientRequest;

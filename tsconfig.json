@@ -3,7 +3,7 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/test", "apps/*/src", "apps/*/test"],
+  "include": ["packages/*/src", "packages/*/test", "packages/*/scripts", "apps/*/src", "apps/*/test", "scripts"],
   // The Worker is checked against Cloudflare's runtime types instead (apps/cloudflare/tsconfig.json).
   "exclude": ["apps/cloudflare/src"]
 }
