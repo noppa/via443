@@ -6,7 +6,7 @@ import { migrate, sqliteDb } from '../src/node/index.ts';
 const ORIGIN = 'https://via443.test';
 const SETUP_TOKEN = 'setup-secret';
 
-function setup() {
+function setup(config: { defaultServer?: string } = { defaultServer: 'via443.test' }) {
   const raw = new DatabaseSync(':memory:');
   migrate(raw);
   const accounts = new Accounts(sqliteDb(raw));
@@ -16,7 +16,7 @@ function setup() {
     mailer: { send: async (mail) => void mails.push(mail) },
     publicOrigin: ORIGIN,
     setupToken: SETUP_TOKEN,
-    defaultServer: 'via443.test',
+    ...config,
   });
   return { app, accounts, mails };
 }
@@ -51,13 +51,13 @@ function browser(app: ReturnType<typeof setup>['app']) {
 
 /** Pulls the secret shown in a page's <pre> block. */
 async function shownSecret(res: Response): Promise<string> {
-  const match = (await res.text()).match(/<pre>([^<]+)<\/pre>/);
+  const match = (await res.text()).match(/<pre[^>]*>([^<]+)<\/pre>/);
   if (!match) throw new Error('no secret on page');
   return match[1]!.replaceAll('&amp;', '&');
 }
 
-async function signedInAdmin() {
-  const ctx = setup();
+async function signedInAdmin(config?: Parameters<typeof setup>[0]) {
+  const ctx = setup(config);
   const admin = browser(ctx.app);
   const res = await admin.post('/setup', { token: SETUP_TOKEN, email: 'admin@example.com' });
   expect(res.status).toBe(303);
@@ -102,7 +102,9 @@ describe('dashboard', () => {
 
   it('creates an API token that authenticates tunnels, and revokes it', async () => {
     const { admin, accounts } = await signedInAdmin();
-    const token = await shownSecret(await admin.post('/tokens', { name: 'laptop' }));
+    const created = await (await admin.post('/tokens', { name: 'laptop' })).text();
+    const token = await shownSecret(new Response(created));
+    expect(created).toContain(`npx via443 --port 3000 --token ${token}</pre>`);
     const owner = await accounts.authenticateApiToken(token);
     expect(owner).not.toBeNull();
 
@@ -113,6 +115,13 @@ describe('dashboard', () => {
 
     expect((await admin.post(`/tokens/${owner!.tokenId}/revoke`)).status).toBe(303);
     expect(await accounts.authenticateApiToken(token)).toBeNull();
+  });
+
+  it('includes --server in the command when the relay is not the client default', async () => {
+    const { admin } = await signedInAdmin({});
+    const created = await (await admin.post('/tokens', { name: 'laptop' })).text();
+    const token = await shownSecret(new Response(created));
+    expect(created).toContain(`npx via443 --port 3000 --server via443.test --token ${token}</pre>`);
   });
 });
 

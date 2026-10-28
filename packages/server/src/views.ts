@@ -28,6 +28,8 @@ const style = `
   th { font-weight: 600; font-size: 0.9em; color: var(--muted); }
   code, pre { font-family: ui-monospace, monospace; background: var(--code); border-radius: 4px; }
   code { padding: 1px 4px; } pre { padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  /* One click selects the whole block, ready to copy, without client-side JavaScript. */
+  pre.copy { user-select: all; }
   .notice { border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 6px; margin: 16px 0; }
   .error { border-left-color: var(--danger); }
 `;
@@ -78,13 +80,14 @@ export function messagePage(title: string, message: string, options: { error?: b
 }
 
 /** Shows a secret (token or link) that can't be shown again. */
-export function secretPage(title: string, explanation: string, secret: string, user: User): Html {
+export function secretPage(title: string, explanation: string, secret: string, user: User, extra: Html | '' = ''): Html {
   return layout(
     title,
     html`<h1>${title}</h1>
 <p>${explanation}</p>
-<pre>${secret}</pre>
+<pre class="copy">${secret}</pre>
 <p class="muted">This is shown only once.</p>
+${extra}
 <p><a href="/">Back to the dashboard</a></p>`,
     user,
   );
@@ -153,6 +156,13 @@ ${error ? html`<div class="notice error">${error}</div>` : ''}
   <button>Create admin account</button>
 </form>`,
   );
+}
+
+/** A ready-to-paste command for a new API token. */
+export function tokenCommand(token: string, serverFlag: string): Html {
+  return html`<h2>Expose a local port</h2>
+<pre class="copy">npx via443 --port 3000${serverFlag} --token ${token}</pre>
+<p class="muted">Change 3000 to your app's port. Click the command to select it.</p>`;
 }
 
 export interface DashboardData {

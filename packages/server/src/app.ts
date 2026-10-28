@@ -15,6 +15,7 @@ import {
   requestAccessPage,
   secretPage,
   setupPage,
+  tokenCommand,
 } from './views.ts';
 
 export interface AppConfig {
@@ -24,7 +25,7 @@ export interface AppConfig {
   publicOrigin: string;
   /** Enables `/setup?token=…` while the relay has no users. */
   setupToken?: string;
-  /** Domain the client's `--server` flag defaults to; the dashboard only shows the flag when it differs. */
+  /** Domain the client's `--server` flag defaults to, `via443.com`; the dashboard only shows the flag when it differs. */
   defaultServer?: string;
   /** Called when a token is revoked or a user disabled, so the relay can drop their live tunnels. */
   onAccessRevoked?: (match: { userId?: string; tokenId?: string }) => void | Promise<void>;
@@ -48,6 +49,9 @@ export function createApp(config: AppConfig): Hono<Env> {
   // `__Host-` cookies are bound to this exact host, so tunnel subdomains never see the session.
   const cookieName = secure ? '__Host-via443_session' : 'via443_session';
   const app = new Hono<Env>();
+  const host = new URL(publicOrigin).host;
+  // The `--server` flag for commands shown to users, or empty when the client's default is this relay.
+  const serverFlag = (config.defaultServer ?? 'via443.com') === host ? '' : ` --server ${secure ? host : publicOrigin}`;
 
   app.use(csrf({ origin: publicOrigin }));
 
@@ -98,8 +102,6 @@ export function createApp(config: AppConfig): Hono<Env> {
   app.get('/', async (c) => {
     const user = c.get('user');
     if (!user) return c.html(landingPage());
-    const host = new URL(publicOrigin).host;
-    const serverFlag = config.defaultServer === host ? '' : ` --server ${secure ? host : publicOrigin}`;
     return c.html(
       dashboardPage({
         user,
@@ -229,6 +231,7 @@ export function createApp(config: AppConfig): Hono<Env> {
         'Copy your token now. Pass it to the client with --token or the VIA443_TOKEN environment variable.',
         token,
         user,
+        tokenCommand(token, serverFlag),
       ),
     );
   });
