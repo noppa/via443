@@ -2,15 +2,19 @@ import http from 'node:http';
 import {
   decodeRequestHead,
   decodeReset,
+  decodeWindow,
   encodeBody,
   encodeReset,
   encodeResponseHead,
+  encodeWindow,
   type Frame,
   FrameType,
   type HeaderList,
   isEnd,
   MAX_CHUNK_SIZE,
+  ReceiveWindow,
   type RequestHead,
+  SendWindow,
   stripHopByHop,
 } from '@via443/protocol';
 
@@ -31,6 +35,10 @@ interface LocalStream {
   request: http.ClientRequest;
   response?: http.IncomingMessage;
   done: boolean;
+  /** Credit the relay has for sending the request body. */
+  uploadWindow: ReceiveWindow;
+  /** Credit for sending the response body. */
+  downloadWindow: SendWindow;
 }
 
 const NO_BODY_STATUSES = new Set([204, 205, 304]);
@@ -64,8 +72,22 @@ export class LocalForwarder {
       case FrameType.REQ_BODY: {
         const stream = this.#streams.get(frame.streamId);
         if (!stream) return;
-        if (frame.payload.byteLength > 0) stream.request.write(frame.payload);
+        const bytes = frame.payload.byteLength;
+        stream.uploadWindow.received(bytes);
+        if (bytes > 0) {
+          // The callback runs once the chunk is handed to the local socket; only then may the relay send more.
+          stream.request.write(frame.payload, () => {
+            if (stream.done) return;
+            const increment = stream.uploadWindow.consumed(bytes);
+            if (increment > 0) this.#send(encodeWindow(frame.streamId, increment));
+          });
+        }
         if (isEnd(frame)) stream.request.end();
+        return;
+      }
+      case FrameType.WINDOW: {
+        const increment = decodeWindow(frame);
+        this.#streams.get(frame.streamId)?.downloadWindow.grant(increment);
         return;
       }
       case FrameType.RESET: {
@@ -94,7 +116,12 @@ export class LocalForwarder {
       headers: flatten(localRequestHeaders(head.headers, this.#target)),
       setHost: false,
     });
-    const stream: LocalStream = { request, done: false };
+    const stream: LocalStream = {
+      request,
+      done: false,
+      uploadWindow: new ReceiveWindow(),
+      downloadWindow: new SendWindow(),
+    };
     this.#streams.set(streamId, stream);
 
     request.on('response', (response) => {
@@ -108,22 +135,35 @@ export class LocalForwarder {
         log(response.statusCode);
         return;
       }
-      response.on('data', (chunk: Buffer) => {
-        for (let offset = 0; offset < chunk.byteLength; offset += MAX_CHUNK_SIZE) {
-          this.#send(encodeBody(FrameType.RES_BODY, streamId, chunk.subarray(offset, offset + MAX_CHUNK_SIZE), false));
-        }
-      });
-      response.on('end', () => {
-        if (stream.done) return;
-        this.#send(encodeBody(FrameType.RES_BODY, streamId, new Uint8Array(), true));
-        this.#complete(streamId);
-        log(response.statusCode);
-      });
-      response.on('error', (err) => this.#fail(streamId, err, () => log(response.statusCode, err.message)));
+      void this.#sendBody(streamId, stream, response).then(
+        (completed) => {
+          if (completed) log(response.statusCode);
+        },
+        (err: Error) => this.#fail(streamId, err, () => log(response.statusCode, err.message)),
+      );
     });
 
     request.on('error', (err) => this.#fail(streamId, err, () => log(undefined, describeError(err))));
     if (end) request.end();
+  }
+
+  /**
+   * Streams the local response body to the relay, pausing it while the relay's
+   * window is used up. Resolves false if the stream was aborted on the way.
+   */
+  async #sendBody(streamId: number, stream: LocalStream, response: http.IncomingMessage): Promise<boolean> {
+    for await (const chunk of response as AsyncIterable<Buffer>) {
+      for (let offset = 0; offset < chunk.byteLength; ) {
+        const bytes = await stream.downloadWindow.take(Math.min(MAX_CHUNK_SIZE, chunk.byteLength - offset));
+        if (stream.done || bytes === 0) return false;
+        this.#send(encodeBody(FrameType.RES_BODY, streamId, chunk.subarray(offset, offset + bytes), false));
+        offset += bytes;
+      }
+    }
+    if (stream.done) return false;
+    this.#send(encodeBody(FrameType.RES_BODY, streamId, new Uint8Array(), true));
+    this.#complete(streamId);
+    return true;
   }
 
   #fail(streamId: number, err: Error, log: () => void): void {
@@ -146,6 +186,7 @@ export class LocalForwarder {
     const stream = this.#streams.get(streamId);
     if (!stream) return;
     stream.done = true;
+    stream.downloadWindow.close();
     this.#streams.delete(streamId);
   }
 }

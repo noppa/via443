@@ -169,6 +169,72 @@ describe('tunnel over plain HTTP relay', () => {
     expect(download.body.every((b) => b === 7)).toBe(true);
   });
 
+  it('slows the local server down to the pace of a slow visitor', async () => {
+    const size = 64 * 1024 * 1024;
+    let written = 0;
+    const app = http.createServer(async (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      const chunk = Buffer.alloc(64 * 1024, 3);
+      while (written < size) {
+        written += chunk.length;
+        if (!res.write(chunk)) await once(res, 'drain');
+      }
+      res.end();
+    });
+    const appPort = await listen(app);
+    const relay = await startRelay();
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+
+    const req = http.get({ host: '127.0.0.1', port: relay.port, path: '/', headers: { host: new URL(tunnel.url).host } });
+    const [res] = (await once(req, 'response')) as [http.IncomingMessage];
+    res.pause();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(written).toBeLessThan(size / 4);
+
+    let received = 0;
+    res.on('data', (c: Buffer) => (received += c.length));
+    res.resume();
+    await once(res, 'end');
+    expect(received).toBe(size);
+  });
+
+  it('slows a visitor upload down to the pace of a slow local server', async () => {
+    const size = 64 * 1024 * 1024;
+    let readable!: http.IncomingMessage;
+    let response!: http.ServerResponse;
+    const app = http.createServer((req, res) => {
+      req.pause();
+      readable = req;
+      response = res;
+    });
+    const appPort = await listen(app);
+    const relay = await startRelay();
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+
+    let sent = 0;
+    const req = http.request({ host: '127.0.0.1', port: relay.port, path: '/', method: 'POST', headers: { host: new URL(tunnel.url).host } });
+    const chunk = Buffer.alloc(64 * 1024, 5);
+    const uploading = (async () => {
+      while (sent < size) {
+        sent += chunk.length;
+        if (!req.write(chunk)) await once(req, 'drain');
+      }
+      req.end();
+    })();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(sent).toBeLessThan(size / 4);
+
+    let received = 0;
+    readable.on('data', (c: Buffer) => (received += c.length));
+    readable.resume();
+    await once(readable, 'end');
+    await uploading;
+    response.end('ok');
+    const [res] = (await once(req, 'response')) as [http.IncomingMessage];
+    expect(res.statusCode).toBe(200);
+    expect(received).toBe(size);
+  });
+
   it('handles many concurrent requests', async () => {
     const appPort = await startApp();
     const relay = await startRelay();

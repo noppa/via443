@@ -7,6 +7,7 @@
  *   +-------+-------+---------------+--------------...
  *
  * Stream 0 carries connection-level frames (WELCOME, GOAWAY, PING, PONG).
+ * Body frames are flow-controlled per stream with WINDOW frames (see flow.ts).
  * The protocol version, API token and resume request travel as headers on the
  * WebSocket upgrade request (see connect.ts), not as frames, so a relay can
  * route and reject a connection before accepting the WebSocket.

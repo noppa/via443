@@ -6,6 +6,7 @@ import {
   decodeReset,
   decodeResponseHead,
   decodeWelcome,
+  decodeWindow,
   encodeBody,
   encodeFrame,
   encodeGoAway,
@@ -13,15 +14,19 @@ import {
   encodeReset,
   encodeResponseHead,
   encodeWelcome,
+  encodeWindow,
   Flags,
   FrameType,
   HEADER_SIZE,
+  INITIAL_WINDOW,
   isEnd,
   MAX_STREAM_ID,
   formatResume,
   parseBearer,
   parseResume,
   ProtocolError,
+  ReceiveWindow,
+  SendWindow,
   stripHopByHop,
 } from '../src/index.ts';
 
@@ -126,6 +131,47 @@ describe('messages', () => {
     );
     expect(() => decodeResponseHead(raw(FrameType.RES_HEAD, '{"status":42,"headers":[]}'))).toThrow(/status/);
     expect(() => decodeWelcome(raw(FrameType.GOAWAY, '{}'))).toThrow(/expected frame/);
+  });
+});
+
+describe('flow control', () => {
+  it('round-trips WINDOW increments and rejects bad ones', () => {
+    expect(decodeWindow(roundTrip(encodeWindow(5, 128 * 1024)))).toBe(128 * 1024);
+    const raw = (streamId: number, payload: number[]) =>
+      decodeFrame(encodeFrame({ type: FrameType.WINDOW, flags: 0, streamId, payload: new Uint8Array(payload) }));
+    expect(() => decodeWindow(raw(5, [0, 0, 0, 0]))).toThrow(ProtocolError);
+    expect(() => decodeWindow(raw(5, [0x80, 0, 0, 0]))).toThrow(ProtocolError);
+    expect(() => decodeWindow(raw(5, [0, 1]))).toThrow(/4 bytes/);
+    expect(() => decodeWindow(raw(0, [0, 0, 0, 1]))).toThrow(/stream 0/);
+    expect(() => encodeWindow(5, 0)).toThrow(ProtocolError);
+  });
+
+  it('makes the sender wait for credit and wakes it on grant or close', async () => {
+    const window = new SendWindow();
+    expect(await window.take(INITIAL_WINDOW + 1)).toBe(INITIAL_WINDOW);
+
+    let taken: number | undefined;
+    const pending = window.take(100).then((n) => (taken = n));
+    await Promise.resolve();
+    expect(taken).toBeUndefined();
+    window.grant(40);
+    await pending;
+    expect(taken).toBe(40);
+
+    const closed = window.take(100);
+    window.close();
+    expect(await closed).toBe(0);
+    expect(() => new SendWindow().grant(0x7fff_ffff)).toThrow(/overflow/);
+  });
+
+  it('returns credit in batches and rejects a peer that overruns its window', () => {
+    const window = new ReceiveWindow();
+    window.received(INITIAL_WINDOW);
+    expect(() => window.received(1)).toThrow(/exceeded/);
+    expect(window.consumed(INITIAL_WINDOW / 2 - 1)).toBe(0);
+    expect(window.consumed(1)).toBe(INITIAL_WINDOW / 2);
+    window.received(INITIAL_WINDOW / 2);
+    expect(() => window.received(1)).toThrow(/exceeded/);
   });
 });
 

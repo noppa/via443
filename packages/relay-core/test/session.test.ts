@@ -3,12 +3,15 @@ import {
   decodeFrame,
   decodeRequestHead,
   decodeReset,
+  decodeWindow,
   encodeBody,
   encodeFrame,
   encodeReset,
   encodeResponseHead,
+  encodeWindow,
   type Frame,
   FrameType,
+  INITIAL_WINDOW,
   isEnd,
   PROTOCOL_VERSION,
 } from '@via443/protocol';
@@ -109,6 +112,56 @@ describe('TunnelSession', () => {
     expect(body.reduce((n, f) => n + f.payload.byteLength, 0)).toBe(150 * 1024);
     expect(body.every((f) => f.payload.byteLength <= 64 * 1024)).toBe(true);
     expect(isEnd(body.at(-1)!)).toBe(true);
+  });
+
+  it('stops uploading when the client has no credit left, and resumes on WINDOW', async () => {
+    const { socket, session, reply } = setup();
+    void session.handleRequest(
+      new Request('https://abcd1234.via443.com/upload', { method: 'POST', body: 'x'.repeat(INITIAL_WINDOW + 100) }),
+      ctx,
+    );
+    const bodyBytes = () =>
+      socket.sent.filter((f) => f.type === FrameType.REQ_BODY).reduce((n, f) => n + f.payload.byteLength, 0);
+    for (let i = 0; i < 10; i++) await tick();
+    expect(bodyBytes()).toBe(INITIAL_WINDOW);
+    expect(isEnd(socket.sent.at(-1)!)).toBe(false);
+
+    reply(encodeWindow(socket.sent[0]!.streamId, 1024));
+    for (let i = 0; i < 10; i++) await tick();
+    expect(bodyBytes()).toBe(INITIAL_WINDOW + 100);
+    expect(isEnd(socket.sent.at(-1)!)).toBe(true);
+  });
+
+  it('returns response credit only as the visitor reads', async () => {
+    const { socket, session, reply } = setup();
+    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const streamId = socket.sent[0]!.streamId;
+    reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
+    const res = await pending;
+    const chunk = new Uint8Array(64 * 1024);
+    for (let i = 0; i < 4; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
+    await tick();
+    const windows = () => socket.sent.filter((f) => f.type === FrameType.WINDOW);
+    expect(windows()).toHaveLength(0);
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.read();
+    expect(windows().map(decodeWindow)).toEqual([INITIAL_WINDOW / 2]);
+    expect(windows()[0]!.streamId).toBe(streamId);
+  });
+
+  it('closes the connection when the client overruns its window', async () => {
+    const { socket, session, reply } = setup();
+    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const streamId = socket.sent[0]!.streamId;
+    reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
+    const res = await pending;
+    const chunk = new Uint8Array(64 * 1024);
+    for (let i = 0; i < 5; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
+    expect(socket.closedWith?.[0]).toBe(1002);
+    expect(socket.closedWith?.[1]).toMatch(/window exceeded/);
+    await expect(res.text()).rejects.toThrow(/disconnected/);
   });
 
   it('answers 502 when the client resets before responding', async () => {

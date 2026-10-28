@@ -31,6 +31,14 @@ _Status: in progress. This builds on `proxy-friendly-tunnel-initial-plan.md` and
 - After the upgrade, the relay's first frame is `WELCOME` with the tunnel ID, public URL and a fresh resume token. Everything after that is the binary frame protocol in `packages/protocol`.
 - A resume succeeds when the tunnel ID is still reserved (10 minutes after a disconnect), belongs to the same user and the resume token matches. Otherwise the client simply gets a new ID and says so loudly.
 
+## Flow control
+
+- Credit-based and per stream, like HTTP/2. Each direction of a stream starts with a 256 KiB window, which is how many body bytes the sender may have in flight that the receiver's consumer hasn't taken yet. Only body payload bytes count.
+- The receiver returns credit with `WINDOW` frames (a 4-byte increment) once its consumer has taken the data: on the relay when the visitor side reads the response body, on the client when the chunk has been written to the local server's socket. Credit goes back in batches of at least half a window.
+- A sender that overruns its window is a protocol error and the connection closes (1002).
+- There is no connection-level window: per-stream windows already bound what any one connection can buffer, and the WebSocket itself runs over TCP.
+- The window caps one stream's throughput at about window / round-trip time (256 KiB at 50 ms ≈ 5 MB/s). If that turns out to be too low, raise `INITIAL_WINDOW` or grow windows for streams that are being drained quickly.
+
 ## Packages
 
 ```
@@ -95,7 +103,7 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [x] relay-core: tunnel session with streamed bodies in both directions, error mapping, X-Forwarded-* headers.
 - [x] Node relay: host routing, `/connect`, in-memory tunnel registry with resume, rate limit on unknown tunnels.
 - [x] Client: proxy-aware connect, request forwarding, keepalive, reconnect with resume, CLI.
-- [ ] Flow control (`WINDOW` frames); today a slow visitor or local server can make the other side buffer.
+- [x] Flow control: per-stream `WINDOW` credit, so a slow visitor or local server slows the other side down instead of making the relay or client buffer.
 - [x] Accounts: `packages/server` with SQL migrations, setup token, invites, access requests, sign-in links (shown to the admin or logged, not emailed yet), sessions, API tokens, and the dashboard. Wired into the Node relay.
 - [ ] Email delivery (SMTP / email API) for sign-in links and invites.
 - [ ] Rate limits on the sign-in and access-request forms.

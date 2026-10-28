@@ -3,18 +3,22 @@ import {
   decodeGoAway,
   decodeReset,
   decodeResponseHead,
+  decodeWindow,
   encodeBody,
   encodeFrame,
   encodeRequestHead,
   encodeReset,
   encodeWelcome,
+  encodeWindow,
   type Frame,
   FrameType,
   type HeaderList,
   isEnd,
   MAX_CHUNK_SIZE,
   ProtocolError,
+  ReceiveWindow,
   type RequestHead,
+  SendWindow,
   stripHopByHop,
   type Welcome,
 } from '@via443/protocol';
@@ -38,9 +42,13 @@ interface Stream {
   /** RES_HEAD arrived and the Response was handed out. */
   responded: boolean;
   /** The response body; absent for responses without one. */
-  body?: ReadableStreamDefaultController<Uint8Array>;
+  body?: InboundBody;
   /** Cancels the request body upload, if one is still running. */
   stopUpload?: () => void;
+  /** Credit for sending the request body. */
+  uploadWindow: SendWindow;
+  /** Credit the client has for sending the response body. */
+  downloadWindow: ReceiveWindow;
 }
 
 /** Statuses whose responses never have a body; the Response constructor rejects one. */
@@ -86,7 +94,12 @@ export class TunnelSession {
     const hasBody = req.body !== null;
 
     return new Promise<Response>((resolve) => {
-      const stream: Stream = { respond: resolve, responded: false };
+      const stream: Stream = {
+        respond: resolve,
+        responded: false,
+        uploadWindow: new SendWindow(),
+        downloadWindow: new ReceiveWindow(),
+      };
       this.#streams.set(streamId, stream);
       this.#send(encodeRequestHead(streamId, buildRequestHead(req, ctx), !hasBody));
       if (req.body) this.#upload(streamId, stream, req.body);
@@ -149,9 +162,11 @@ export class TunnelSession {
         this.#fail(frame.streamId, `the tunnel client could not complete the request (${detail}).`);
         return;
       }
-      case FrameType.WINDOW:
-        // Flow control is not implemented yet.
+      case FrameType.WINDOW: {
+        const increment = decodeWindow(frame);
+        this.#streams.get(frame.streamId)?.uploadWindow.grant(increment);
         return;
+      }
       default:
         throw new ProtocolError(`unexpected frame 0x${frame.type.toString(16)} from client`);
     }
@@ -180,22 +195,25 @@ export class TunnelSession {
       return;
     }
 
-    const body = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        stream.body = controller;
+    const streamId = frame.streamId;
+    stream.body = new InboundBody(
+      (bytes) => {
+        const increment = stream.downloadWindow.consumed(bytes);
+        if (increment > 0 && this.#streams.has(streamId)) this.#send(encodeWindow(streamId, increment));
       },
-      cancel: () => this.#cancel(frame.streamId, 'cancelled', 'response body cancelled'),
-    });
-    stream.respond(new Response(body, { status: head.status, headers }));
+      () => this.#cancel(streamId, 'cancelled', 'response body cancelled'),
+    );
+    stream.respond(new Response(stream.body.readable, { status: head.status, headers }));
   }
 
   #onResponseBody(frame: Frame): void {
     const stream = this.#streams.get(frame.streamId);
     if (!stream) return;
     if (!stream.responded) throw new ProtocolError(`RES_BODY before RES_HEAD on stream ${frame.streamId}`);
+    stream.downloadWindow.received(frame.payload.byteLength);
     if (stream.body) {
-      if (frame.payload.byteLength > 0) stream.body.enqueue(frame.payload.slice());
-      if (isEnd(frame)) stream.body.close();
+      if (frame.payload.byteLength > 0) stream.body.push(frame.payload.slice());
+      if (isEnd(frame)) stream.body.end();
     }
     if (isEnd(frame)) this.#finish(frame.streamId);
   }
@@ -205,6 +223,7 @@ export class TunnelSession {
     let stopped = false;
     stream.stopUpload = () => {
       stopped = true;
+      stream.uploadWindow.close();
       reader.cancel().catch(() => {});
     };
     const pump = async () => {
@@ -216,8 +235,11 @@ export class TunnelSession {
             this.#send(encodeBody(FrameType.REQ_BODY, streamId, new Uint8Array(), true));
             return;
           }
-          for (let offset = 0; offset < value.byteLength; offset += MAX_CHUNK_SIZE) {
-            this.#send(encodeBody(FrameType.REQ_BODY, streamId, value.subarray(offset, offset + MAX_CHUNK_SIZE), false));
+          for (let offset = 0; offset < value.byteLength; ) {
+            const bytes = await stream.uploadWindow.take(Math.min(MAX_CHUNK_SIZE, value.byteLength - offset));
+            if (stopped || bytes === 0) return;
+            this.#send(encodeBody(FrameType.REQ_BODY, streamId, value.subarray(offset, offset + bytes), false));
+            offset += bytes;
           }
         }
       } catch {
@@ -244,12 +266,8 @@ export class TunnelSession {
     stream.stopUpload?.();
     if (!stream.responded) {
       stream.respond(tunnelErrorResponse(502, message));
-    } else if (stream.body) {
-      try {
-        stream.body.error(new Error(message));
-      } catch {
-        // Already closed or errored.
-      }
+    } else {
+      stream.body?.error(new Error(message));
     }
   }
 
@@ -264,6 +282,68 @@ export class TunnelSession {
   #send(frame: Frame): void {
     if (this.#closed) return;
     this.#socket.send(encodeFrame(frame));
+  }
+}
+
+/**
+ * A response body fed by RES_BODY frames. Chunks wait here until the visitor
+ * side reads them, and only then does the client get its credit back, so a
+ * slow visitor slows the local server down instead of filling the relay's memory.
+ */
+class InboundBody {
+  readonly readable: ReadableStream<Uint8Array>;
+  #queue: Uint8Array[] = [];
+  #ended = false;
+  #error: Error | undefined;
+  #wake: (() => void) | undefined;
+
+  constructor(onConsumed: (bytes: number) => void, onCancel: () => void) {
+    this.readable = new ReadableStream<Uint8Array>(
+      {
+        // With a high-water mark of 0, pull runs only when someone is waiting to read.
+        pull: async (controller) => {
+          while (this.#queue.length === 0 && !this.#ended && !this.#error) {
+            await new Promise<void>((resolve) => (this.#wake = resolve));
+          }
+          if (this.#error) {
+            controller.error(this.#error);
+            return;
+          }
+          const chunk = this.#queue.shift();
+          if (!chunk) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk);
+          onConsumed(chunk.byteLength);
+        },
+        cancel: onCancel,
+      },
+      { highWaterMark: 0 },
+    );
+  }
+
+  push(chunk: Uint8Array): void {
+    this.#queue.push(chunk);
+    this.#signal();
+  }
+
+  end(): void {
+    this.#ended = true;
+    this.#signal();
+  }
+
+  /** Fails the body; chunks not read yet are dropped. */
+  error(err: Error): void {
+    this.#error ??= err;
+    this.#queue = [];
+    this.#signal();
+  }
+
+  #signal(): void {
+    const wake = this.#wake;
+    this.#wake = undefined;
+    wake?.();
   }
 }
 
