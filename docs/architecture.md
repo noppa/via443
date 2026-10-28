@@ -49,6 +49,7 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
   - **Bootstrapping the first admin:** a `SETUP_TOKEN` secret (an env var on Node, a Wrangler secret on Cloudflare). While there are no users, `/setup?token=…` creates the admin account and signs them in. This works the same on both targets and needs no CLI access to the server.
   - GitHub OAuth was rejected for now: every deployment would have to register its own GitHub OAuth app and manage its client secret.
 - **API tokens:** users create and revoke named tokens in the dashboard. A token is shown once, and only its hash (SHA-256) is stored, together with a short visible prefix so users can recognize it. The CLI sends the token in the `/connect` handshake. The relay checks it against the account DB and caches the result briefly.
+- **No anonymous tunnels, ever.** Every tunnel requires a valid API token, so every tunnel traces back to an invited user whose tokens can be revoked. The relay rejects `/connect` without one.
 - **Tunnel ownership:** a tunnel belongs to the token's user. Reserved custom subdomains are a per-user feature added later.
 
 ## Local development
@@ -59,5 +60,4 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 ## Open questions
 
-- **Anonymous tunnels:** proposed default is to require an API token for every tunnel, since the first users are a small invited group.
 - **Domain name.**
