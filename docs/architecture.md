@@ -11,6 +11,14 @@ _Status: proposal. This builds on `proxy-friendly-tunnel-initial-plan.md` and re
 - **Miniflare is for local development and tests of the Cloudflare target only.** We use it through `wrangler dev` and `@cloudflare/vitest-pool-workers`. It is not the self-hosting story: Miniflare is a dev simulator and not meant for production. Running raw `workerd` in production is possible, but it would still need TLS, process supervision and persistence wired up around it, and it would make self-hosters learn Cloudflare's tooling. A plain Node server is simpler to run and to debug.
 - **Self-hosting works because the code is host-agnostic.** All real logic lives in packages that depend only on web-standard APIs (`Request`, `Response`, `ReadableStream`, `WebSocket`-like interfaces, `crypto.subtle`). Each target gets a thin adapter.
 
+## Domain
+
+- The hosted service runs at **via443.com**. Tunnels are served at `https://<id>.via443.com`, and the dashboard and the client endpoint (`wss://via443.com/connect`) live on the apex domain.
+- Nothing hard-codes the domain on the server side. It is one setting, `VIA443_DOMAIN` (an env var on Node, a `wrangler.toml` var on Cloudflare), and every URL the server prints, links to or routes on is derived from it.
+- The client defaults to `via443.com`. Self-hosters point it elsewhere with `--server <domain>` or `VIA443_SERVER`, and `via443 login` can save that choice in the client's config file.
+- Tunnel hostnames stay **one level deep** (`<id>.<domain>`, and `<id>-<name>.<domain>` for multi-port), so a single `*.<domain>` wildcard certificate covers all of them. Cloudflare's free Universal SSL covers exactly that; a self-hosted Caddy can get one through a DNS challenge.
+- A list of reserved names (`www`, `app`, `api`, `admin`, `mail`, …) can never be used as tunnel IDs or custom subdomains.
+
 ## Packages
 
 ```
@@ -60,4 +68,3 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 ## Open questions
 
-- **Domain name.**
