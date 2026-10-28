@@ -16,8 +16,9 @@ _Status: proposal. This builds on `proxy-friendly-tunnel-initial-plan.md` and re
 - The hosted service runs at **via443.com**. Tunnels are served at `https://<id>.via443.com`, and the dashboard and the client endpoint (`wss://via443.com/connect`) live on the apex domain.
 - Nothing hard-codes the domain on the server side. It is one setting, `VIA443_DOMAIN` (an env var on Node, a `wrangler.toml` var on Cloudflare), and every URL the server prints, links to or routes on is derived from it.
 - The client defaults to `via443.com`. Self-hosters point it elsewhere with `--server <domain>` or `VIA443_SERVER`, and `via443 login` can save that choice in the client's config file.
-- Tunnel hostnames stay **one level deep** (`<id>.<domain>`, and `<id>-<name>.<domain>` for multi-port), so a single `*.<domain>` wildcard certificate covers all of them. Cloudflare's free Universal SSL covers exactly that; a self-hosted Caddy can get one through a DNS challenge.
-- A list of reserved names (`www`, `app`, `api`, `admin`, `mail`, …) can never be used as tunnel IDs or custom subdomains.
+- Tunnel hostnames are always `<id>.<domain>`, **one level deep**, so a single `*.<domain>` wildcard certificate covers all of them. Cloudflare's free Universal SSL covers exactly that; a self-hosted Caddy can get one through a DNS challenge.
+- **Tunnel IDs are always random**, issued by the relay. There are no self-chosen IDs or custom subdomains until someone actually asks for them. IDs carry at least 64 bits of randomness and have a fixed length and alphabet (e.g. 13 lowercase base32 characters), so they can never collide with names like `www` or `api`, and no reserved-names list is needed.
+- **Multi-port:** each exposed port gets its own random ID (`--port 8080 --port sandbox=8081` gives two unrelated hostnames). The client prints the name → URL mapping and can write it to a file or env var so the app can find its sibling origins. All IDs stay the same across reconnects through the resume token.
 
 ## Packages
 
@@ -58,7 +59,7 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
   - GitHub OAuth was rejected for now: every deployment would have to register its own GitHub OAuth app and manage its client secret.
 - **API tokens:** users create and revoke named tokens in the dashboard. A token is shown once, and only its hash (SHA-256) is stored, together with a short visible prefix so users can recognize it. The CLI sends the token in the `/connect` handshake. The relay checks it against the account DB and caches the result briefly.
 - **No anonymous tunnels, ever.** Every tunnel requires a valid API token, so every tunnel traces back to an invited user whose tokens can be revoked. The relay rejects `/connect` without one.
-- **Tunnel ownership:** a tunnel belongs to the token's user. Reserved custom subdomains are a per-user feature added later.
+- **Tunnel ownership:** a tunnel belongs to the token's user.
 
 ## Local development
 
