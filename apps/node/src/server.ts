@@ -11,9 +11,16 @@ import {
   tunnelErrorResponse,
 } from '@via443/relay-core';
 import { WebSocketServer } from 'ws';
-import type { Authenticate } from './auth.ts';
 import { RateLimiter } from './rate-limit.ts';
-import { TunnelRegistry } from './registry.ts';
+import { type TunnelOwner, TunnelRegistry } from './registry.ts';
+
+/** Checks a client's API token. Null rejects the connection. */
+export type Authenticate = (token: string) => Promise<TunnelOwner | null>;
+
+/** Anything with a fetch handler, e.g. the Hono dashboard app from @via443/server. */
+export interface FetchHandler {
+  fetch(request: Request): Response | Promise<Response>;
+}
 
 export interface RelayConfig {
   /** Public domain, e.g. `via443.com`, or `localhost:8080` for local development. */
@@ -23,7 +30,11 @@ export interface RelayConfig {
   /** Use the last X-Forwarded-For entry as the visitor's IP. Only behind a trusted reverse proxy. */
   trustProxy: boolean;
   authenticate: Authenticate;
-  /** How long a disconnected tunnel keeps its ID for a resume. */
+  /** Serves everything on the apex domain except `/connect`. */
+  app?: FetchHandler;
+  /** Pass one in to reach it before the relay exists, e.g. to drop tunnels on revocation. */
+  registry?: TunnelRegistry;
+  /** How long a disconnected tunnel keeps its ID for a resume. Ignored when `registry` is given. */
   resumeGraceMs?: number;
 }
 
@@ -37,7 +48,7 @@ export interface Relay {
 }
 
 export function createRelay(config: RelayConfig): Relay {
-  const registry = new TunnelRegistry(config.resumeGraceMs);
+  const registry = config.registry ?? new TunnelRegistry(config.resumeGraceMs);
   const unknownTunnelHits = new RateLimiter(30, 10 * 60_000);
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
 
@@ -61,7 +72,10 @@ export function createRelay(config: RelayConfig): Relay {
   async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const host = matchHost(req.headers.host, config.domain);
     if (host.kind === 'apex') {
-      await writeResponse(res, apexResponse(req));
+      const response = config.app
+        ? await config.app.fetch(toRequest(req, config.scheme))
+        : apexResponse(req);
+      await writeResponse(res, response);
       return;
     }
     if (host.kind === 'unknown') {
@@ -117,8 +131,8 @@ export function createRelay(config: RelayConfig): Relay {
       writeRawResponse(socket, parsed.response);
       return;
     }
-    const user = await config.authenticate(parsed.token);
-    if (!user) {
+    const owner = await config.authenticate(parsed.token);
+    if (!owner) {
       writeRawResponse(socket, connectErrorResponse(401, 'unauthorized', 'The API token is invalid or revoked.'));
       return;
     }
@@ -139,7 +153,7 @@ export function createRelay(config: RelayConfig): Relay {
     }, 15_000);
     idleCheck.unref();
 
-    const { tunnelId, resumeToken } = await registry.attach(user.userId, parsed.resume, session);
+    const { tunnelId, resumeToken } = await registry.attach(owner, parsed.resume, session);
     ws.on('close', () => {
       clearInterval(idleCheck);
       session.closed();

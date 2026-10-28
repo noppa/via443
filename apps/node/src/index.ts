@@ -1,3 +1,2 @@
-export { type Authenticate, type AuthenticatedUser, staticTokens } from './auth.ts';
-export { TunnelRegistry } from './registry.ts';
-export { createRelay, type Relay, type RelayConfig } from './server.ts';
+export { CLOSE_REPLACED, CLOSE_REVOKED, type TunnelOwner, TunnelRegistry } from './registry.ts';
+export { type Authenticate, createRelay, type FetchHandler, type Relay, type RelayConfig } from './server.ts';

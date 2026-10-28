@@ -19,13 +19,18 @@ pnpm typecheck
 Run the whole thing locally:
 
 ```sh
-# 1. The relay, with a temporary token for user "me"
-VIA443_TOKENS=me:devtoken pnpm relay
+# 1. The relay. Data goes to ./data (SQLite).
+VIA443_SETUP_TOKEN=some-secret pnpm relay
 
-# 2. Some local app, e.g. on port 3000, then the client:
-pnpm via443 --port 3000 --server http://localhost:8080 --token devtoken
+# 2. Open the setup link it prints (http://localhost:8080/setup?token=some-secret),
+#    create your admin account, then create an API token in the dashboard.
+
+# 3. Some local app, e.g. on port 3000, then the client:
+pnpm via443 --port 3000 --server http://localhost:8080 --token v443_...
 # → prints http://<id>.localhost:8080, which curl and browsers resolve locally
 ```
+
+Sign-in links and invites aren't emailed yet: the admin dashboard shows the link for you to send by hand, and links from the sign-in form are written to the relay's log.
 
 ### Relay settings (self-hosted)
 
@@ -36,6 +41,7 @@ pnpm via443 --port 3000 --server http://localhost:8080 --token devtoken
 | `VIA443_PORT` | `8080` | Listening port. |
 | `VIA443_LISTEN_HOST` | `0.0.0.0` | Listening address. |
 | `VIA443_TRUST_PROXY` | off | Take the visitor IP from `X-Forwarded-For`. Only behind your own reverse proxy. |
-| `VIA443_TOKENS` | — | Temporary: `user:token,user:token`. Replaced by the accounts database later. |
+| `VIA443_DATA_DIR` | `./data` | Where the SQLite databases live. |
+| `VIA443_SETUP_TOKEN` | — | Secret that enables `/setup?token=…` to create the first admin. Only works while there are no accounts. |
 
 In production, put a TLS-terminating reverse proxy such as Caddy in front, with a wildcard certificate for `*.<domain>`.

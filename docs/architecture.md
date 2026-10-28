@@ -54,7 +54,12 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 ## Database
 
-- **Account DB (users, invites, access requests, tokens):** D1 on Cloudflare and a SQLite file on Node. Both speak SQLite, so one set of SQL migrations covers both. Use a query layer with both drivers, e.g. Drizzle (D1 + better-sqlite3) or Kysely. Access goes through a small repository interface, so the server package doesn't care which driver is behind it.
+- **Account DB (users, invites, access requests, tokens):** D1 on Cloudflare and a SQLite file on Node (`accounts.db`, through the built-in `node:sqlite`, so no native dependency). Both speak SQLite.
+- **No ORM.** The app isn't CRUD-heavy and the schema will change rarely, so queries are hand-written SQL behind a four-method `Db` interface (`all`, `first`, `run`, `batch`) with one adapter for D1 and one for `node:sqlite`. Drizzle was considered and judged more than we need.
+- **Migrations are plain SQL files** in `packages/server/migrations/NNNN_name.sql`, applied in order, never edited once released.
+  - On Cloudflare, `wrangler d1 migrations apply` runs them at deploy time (`migrations_dir` points at that folder).
+  - On Node, the relay applies pending ones at startup, each in its own transaction, recording them in the same `d1_migrations` table wrangler uses.
+  - Migration files must not contain `BEGIN`/`COMMIT`, because D1 rejects explicit transactions.
 - **Request log / inspector (later):** high-write and per-tunnel, so it stays out of the account DB. On Cloudflare it goes into the tunnel's Durable Object storage, which is SQLite-backed. On Node it goes into a separate SQLite file (`logs.db`, WAL mode), apart from the account DB, so heavy log writes never contend with auth lookups and the file can be deleted at any time. Both targets use the same schema and the same SQL.
   - Everything goes in the logs DB, bodies included, to keep things simple for now. Size is handled later with retention (`DELETE ... WHERE ts < ?`) or by partitioning the DB (e.g. one file per day) if needed.
   - Logged bodies are capped (start with 1 MB per body, configurable) and marked as truncated when cut. This keeps rows small and fits Durable Object SQLite's 2 MB per-row limit. The cap affects only the log: the tunnel itself always streams the full body.
@@ -70,7 +75,9 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
   - Accepting an invite signs the person in directly. After that they rarely need the dashboard, since the CLI uses long-lived API tokens. When a session expires, the admin generates a fresh login link for them.
   - **Bootstrapping the first admin:** a `SETUP_TOKEN` secret (an env var on Node, a Wrangler secret on Cloudflare). While there are no users, `/setup?token=…` creates the admin account and signs them in. This works the same on both targets and needs no CLI access to the server.
   - GitHub OAuth was rejected for now: every deployment would have to register its own GitHub OAuth app and manage its client secret.
-- **API tokens:** users create and revoke named tokens in the dashboard. A token is shown once, and only its hash (SHA-256) is stored, together with a short visible prefix so users can recognize it. The CLI sends the token in the `/connect` handshake. The relay checks it against the account DB and caches the result briefly.
+- **API tokens:** users create and revoke named tokens in the dashboard. Tokens look like `v443_<43 random chars>`. A token is shown once, and only its hash (SHA-256) is stored, together with the first 11 characters so users can recognize it. The CLI sends the token in the `/connect` handshake and the relay checks it against the account DB.
+- **Revocation is immediate.** Revoking a token or disabling a user also closes their live tunnels (close code 4001), and those tunnels can't be resumed. Disabling a user also ends their dashboard sessions.
+- **Dashboard security:** server-rendered HTML forms, no client-side JavaScript. The session cookie is `__Host-` prefixed (HttpOnly, Secure, SameSite=Lax, no `Domain`), so tunnel subdomains never receive it. Every POST must carry a same-origin `Origin` header (CSRF). Opening a sign-in link shows a button and doesn't sign in by itself, because mail scanners follow links and would otherwise use them up.
 - **No anonymous tunnels, ever.** Every tunnel requires a valid API token, so every tunnel traces back to an invited user whose tokens can be revoked. The relay rejects `/connect` without one.
 - **Tunnel ownership:** a tunnel belongs to the token's user.
 
@@ -86,10 +93,12 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 - [x] Protocol: frame codec, typed messages, connect handshake headers.
 - [x] relay-core: tunnel session with streamed bodies in both directions, error mapping, X-Forwarded-* headers.
-- [x] Node relay: host routing, `/connect`, in-memory tunnel registry with resume, rate limit on unknown tunnels. Tokens come from `VIA443_TOKENS` until the accounts DB exists.
+- [x] Node relay: host routing, `/connect`, in-memory tunnel registry with resume, rate limit on unknown tunnels.
 - [x] Client: proxy-aware connect, request forwarding, keepalive, reconnect with resume, CLI.
 - [ ] Flow control (`WINDOW` frames); today a slow visitor or local server can make the other side buffer.
-- [ ] Accounts: `packages/server`, SQLite/D1, invites, magic links, API tokens.
+- [x] Accounts: `packages/server` with SQL migrations, setup token, invites, access requests, sign-in links (shown to the admin or logged, not emailed yet), sessions, API tokens, and the dashboard. Wired into the Node relay.
+- [ ] Email delivery (SMTP / email API) for sign-in links and invites.
+- [ ] Rate limits on the sign-in and access-request forms.
 - [ ] Cloudflare adapter.
 - [ ] WebSocket pass-through (HMR).
 - [ ] Multi-port, request log and inspector.

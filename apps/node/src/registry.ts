@@ -1,8 +1,14 @@
 import { generateResumeToken, generateTunnelId, sha256Hex, type TunnelSession } from '@via443/relay-core';
 import type { ResumeRequest } from '@via443/protocol';
 
-interface Entry {
+/** Who opened a tunnel: the user and the API token they used. */
+export interface TunnelOwner {
   userId: string;
+  tokenId: string;
+}
+
+interface Entry {
+  owner: TunnelOwner;
   resumeTokenHash: string;
   session: TunnelSession | undefined;
   /** When a disconnected tunnel's ID is released, unless it is resumed first. */
@@ -17,6 +23,8 @@ export interface Attached {
 
 /** WebSocket close code sent to a session that is replaced by a resumed connection. */
 export const CLOSE_REPLACED = 4000;
+/** WebSocket close code sent when the tunnel's token is revoked or its user disabled. */
+export const CLOSE_REVOKED = 4001;
 
 /**
  * In-memory tunnel table for the single-process relay. A tunnel ID stays
@@ -31,16 +39,17 @@ export class TunnelRegistry {
     this.#graceMs = graceMs;
   }
 
-  async attach(userId: string, resume: ResumeRequest | undefined, session: TunnelSession): Promise<Attached> {
+  async attach(owner: TunnelOwner, resume: ResumeRequest | undefined, session: TunnelSession): Promise<Attached> {
     this.sweep();
     const resumeToken = generateResumeToken();
     const resumeTokenHash = await sha256Hex(resumeToken);
 
     if (resume) {
       const entry = this.#entries.get(resume.tunnelId);
-      if (entry && entry.userId === userId && entry.resumeTokenHash === (await sha256Hex(resume.resumeToken))) {
+      if (entry && entry.owner.userId === owner.userId && entry.resumeTokenHash === (await sha256Hex(resume.resumeToken))) {
         const previous = entry.session;
         entry.session = session;
+        entry.owner = owner;
         entry.expiresAt = undefined;
         entry.resumeTokenHash = resumeTokenHash;
         // The old socket may still look open if the client's network dropped silently.
@@ -51,7 +60,7 @@ export class TunnelRegistry {
 
     let tunnelId = generateTunnelId();
     while (this.#entries.has(tunnelId)) tunnelId = generateTunnelId();
-    this.#entries.set(tunnelId, { userId, resumeTokenHash, session, expiresAt: undefined });
+    this.#entries.set(tunnelId, { owner, resumeTokenHash, session, expiresAt: undefined });
     return { tunnelId, resumeToken, resumed: false };
   }
 
@@ -67,6 +76,20 @@ export class TunnelRegistry {
     if (!entry || entry.session !== session) return;
     entry.session = undefined;
     entry.expiresAt = Date.now() + this.#graceMs;
+  }
+
+  /** Closes and forgets every tunnel opened with a revoked token or by a disabled user. No resume. */
+  revoke(match: { userId?: string; tokenId?: string }): number {
+    let closed = 0;
+    for (const [tunnelId, entry] of this.#entries) {
+      if (entry.owner.userId !== match.userId && entry.owner.tokenId !== match.tokenId) continue;
+      this.#entries.delete(tunnelId);
+      if (entry.session && !entry.session.isClosed) {
+        entry.session.close(CLOSE_REVOKED, 'access revoked');
+        closed++;
+      }
+    }
+    return closed;
   }
 
   sweep(now = Date.now()): void {

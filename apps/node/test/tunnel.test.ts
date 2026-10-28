@@ -9,9 +9,10 @@ import { join } from 'node:path';
 import tls from 'node:tls';
 import { ConnectRefusedError, openTunnel, type Tunnel } from 'via443';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createRelay, type Relay, staticTokens } from '../src/index.ts';
-
-const TOKEN = 'test-token';
+import { DatabaseSync } from 'node:sqlite';
+import { Accounts, createApp, logMailer } from '@via443/server';
+import { migrate, sqliteDb } from '@via443/server/node';
+import { createRelay, type Relay, TunnelRegistry } from '../src/index.ts';
 const cleanups: (() => Promise<void> | void)[] = [];
 
 afterEach(async () => {
@@ -70,16 +71,34 @@ async function startApp(): Promise<number> {
   return listen(server);
 }
 
-/** A relay for domain `localhost`; visitors' Host headers carry no port, so the listening port doesn't matter. */
+/**
+ * A relay for domain `localhost` with an in-memory accounts DB and one user
+ * holding an API token. Visitors' Host headers carry no port, so the listening
+ * port doesn't matter.
+ */
 async function startRelay(scheme: 'http' | 'https' = 'http') {
+  const sqlite = new DatabaseSync(':memory:');
+  migrate(sqlite);
+  const accounts = new Accounts(sqliteDb(sqlite));
+  const admin = await accounts.createFirstAdmin('admin@example.com');
+  const { token, info } = await accounts.createApiToken(admin.id, 'test');
+  const registry = new TunnelRegistry();
   const relay: Relay = createRelay({
     domain: 'localhost',
     scheme,
     trustProxy: false,
-    authenticate: await staticTokens(`alice:${TOKEN}`),
+    authenticate: (t) => accounts.authenticateApiToken(t),
+    app: createApp({
+      accounts,
+      mailer: logMailer(() => {}),
+      publicOrigin: `${scheme}://localhost`,
+      onAccessRevoked: (match) => void registry.revoke(match),
+    }),
+    registry,
   });
   const port = await listen(relay.server);
-  return { port, registry: relay.registry };
+  cleanups.push(() => sqlite.close());
+  return { port, registry, accounts, token, tokenId: info.id, userId: admin.id };
 }
 
 async function startTunnel(options: Parameters<typeof openTunnel>[0]): Promise<Tunnel> {
@@ -117,7 +136,7 @@ describe('tunnel over plain HTTP relay', () => {
   it('forwards requests and responses', async () => {
     const appPort = await startApp();
     const relay = await startRelay();
-    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: TOKEN });
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
     expect(tunnel.url).toMatch(/^http:\/\/[a-z0-9]{8}\.localhost$/);
 
     const reply = await visit(relay.port, tunnel.url, '/echo?x=1', { method: 'POST', body: 'hello' });
@@ -139,7 +158,7 @@ describe('tunnel over plain HTTP relay', () => {
   it('streams large bodies in both directions', async () => {
     const appPort = await startApp();
     const relay = await startRelay();
-    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: TOKEN });
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
 
     const upload = await visit(relay.port, tunnel.url, '/upload', { method: 'POST', body: Buffer.alloc(8 * 1024 * 1024, 1) });
     expect(json(upload).bytes).toBe(8 * 1024 * 1024);
@@ -153,7 +172,7 @@ describe('tunnel over plain HTTP relay', () => {
   it('handles many concurrent requests', async () => {
     const appPort = await startApp();
     const relay = await startRelay();
-    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: TOKEN });
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
     const replies = await Promise.all(
       Array.from({ length: 100 }, (_, i) => visit(relay.port, tunnel.url, `/n/${i}`, { method: 'POST', body: `body-${i}` })),
     );
@@ -167,7 +186,7 @@ describe('tunnel over plain HTTP relay', () => {
     const closed = http.createServer();
     const deadPort = await listen(closed);
     await new Promise<void>((r) => closed.close(() => r()));
-    const tunnel = await startTunnel({ port: deadPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: TOKEN });
+    const tunnel = await startTunnel({ port: deadPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
     const reply = await visit(relay.port, tunnel.url, '/');
     expect(reply.status).toBe(502);
     expect(reply.body.toString()).toContain('ECONNREFUSED');
@@ -188,7 +207,7 @@ describe('tunnel over plain HTTP relay', () => {
   it('reconnects and keeps the same URL', async () => {
     const appPort = await startApp();
     const relay = await startRelay();
-    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: TOKEN });
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
     const url = tunnel.url;
 
     const reconnected = once(tunnel, 'reconnected');
@@ -197,6 +216,36 @@ describe('tunnel over plain HTTP relay', () => {
 
     expect(tunnel.url).toBe(url);
     expect((await visit(relay.port, url, '/after')).status).toBe(200);
+  });
+});
+
+describe('accounts on the relay', () => {
+  it('serves the dashboard on the apex domain', async () => {
+    const relay = await startRelay();
+    const reply = await visit(relay.port, 'http://localhost', '/');
+    expect(reply.status).toBe(200);
+    expect(reply.body.toString()).toContain('invite-only');
+  });
+
+  it('drops a live tunnel as soon as its token is revoked in the dashboard', async () => {
+    const appPort = await startApp();
+    const relay = await startRelay();
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `http://localhost:${relay.port}`, token: relay.token });
+    expect((await visit(relay.port, tunnel.url, '/')).status).toBe(200);
+
+    const failed = once(tunnel, 'error');
+    const session = await relay.accounts.createSession(relay.userId);
+    const revoke = await visit(relay.port, 'http://localhost', `/tokens/${relay.tokenId}/revoke`, {
+      method: 'POST',
+      headers: { cookie: `via443_session=${session}`, origin: 'http://localhost', 'content-type': 'application/x-www-form-urlencoded' },
+      body: '',
+    });
+    expect(revoke.status).toBe(303);
+
+    const [error] = await failed;
+    expect(error).toBeInstanceOf(ConnectRefusedError);
+    expect((error as ConnectRefusedError).status).toBe(401);
+    expect((await visit(relay.port, tunnel.url, '/')).status).toBe(404);
   });
 });
 
@@ -255,7 +304,7 @@ describe('tunnel over TLS through a CONNECT proxy', () => {
     const proxy = await startProxy();
     const env = { HTTPS_PROXY: `http://127.0.0.1:${proxy.port}` };
 
-    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `https://localhost:${frontPort}`, token: TOKEN, env, ca: [cert] });
+    const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `https://localhost:${frontPort}`, token: relay.token, env, ca: [cert] });
     expect(proxy.connects).toEqual([`localhost:${frontPort}`]);
     expect(tunnel.url).toMatch(/^https:\/\/[a-z0-9]{8}\.localhost$/);
 
@@ -268,7 +317,7 @@ describe('tunnel over TLS through a CONNECT proxy', () => {
     const frontPort = await startTlsFront(relay.port);
     const proxy = await startProxy();
     const env = { HTTPS_PROXY: `http://127.0.0.1:${proxy.port}` };
-    await expect(openTunnel({ port: 1, server: `https://localhost:${frontPort}`, token: TOKEN, env })).rejects.toThrow(
+    await expect(openTunnel({ port: 1, server: `https://localhost:${frontPort}`, token: relay.token, env })).rejects.toThrow(
       /self-signed certificate/,
     );
   });
