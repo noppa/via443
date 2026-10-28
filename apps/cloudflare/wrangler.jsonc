@@ -23,10 +23,12 @@
   "observability": { "enabled": true },
   "env": {
     "production": {
-      // The apex serves the dashboard and /connect; the wildcard serves tunnels.
-      // Both need proxied DNS records (an A/AAAA for the apex and a `*` record).
+      // The apex serves the dashboard and /connect, as a custom domain: deploying
+      // creates its DNS record and certificate. The wildcard serves tunnels; custom
+      // domains can't be wildcards, so it's a route, and needs a proxied `*` DNS
+      // record (e.g. AAAA `*` → 100::) added in the dashboard.
       "routes": [
-        { "pattern": "via443.com/*", "zone_name": "via443.com" },
+        { "pattern": "via443.com", "custom_domain": true },
         { "pattern": "*.via443.com/*", "zone_name": "via443.com" }
       ],
       "vars": {
@@ -41,7 +43,7 @@
           "binding": "DB",
           "database_name": "via443-accounts",
           // From `wrangler d1 create via443-accounts`.
-          "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+          "database_id": "8f5e0fb1-11e1-4398-b497-3556b3e2a2d3",
           "migrations_dir": "../../packages/server/migrations"
         }
       ],
