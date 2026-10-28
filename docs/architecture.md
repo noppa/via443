@@ -42,7 +42,12 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 - **Roles:** `admin` and `user`.
 - **Getting in:** an admin creates an invite, which produces a single-use link. People without an invite can submit an access request, and an admin approves or rejects it. Approval produces an invite.
-- **Signing in to the dashboard:** _open question_, see below.
+- **Signing in to the dashboard:** magic links, without sending any email at first.
+  - A login link is a single-use URL with a random token (stored hashed) that expires after 15 minutes. Opening it creates a session cookie that lasts 30 days and is extended on use.
+  - Links are produced through a `Mailer` interface. The first implementation sends nothing: the admin dashboard shows the link and the admin copies it to the person by hand. The same link is also written to the server log. An SMTP mailer (self-hosted) and an email API mailer (Cloudflare) can be added later without changing the flow.
+  - Accepting an invite signs the person in directly. After that they rarely need the dashboard, since the CLI uses long-lived API tokens. When a session expires, the admin generates a fresh login link for them.
+  - **Bootstrapping the first admin:** a `SETUP_TOKEN` secret (an env var on Node, a Wrangler secret on Cloudflare). While there are no users, `/setup?token=…` creates the admin account and signs them in. This works the same on both targets and needs no CLI access to the server.
+  - GitHub OAuth was rejected for now: every deployment would have to register its own GitHub OAuth app and manage its client secret.
 - **API tokens:** users create and revoke named tokens in the dashboard. A token is shown once, and only its hash (SHA-256) is stored, together with a short visible prefix so users can recognize it. The CLI sends the token in the `/connect` handshake. The relay checks it against the account DB and caches the result briefly.
 - **Tunnel ownership:** a tunnel belongs to the token's user. Reserved custom subdomains are a per-user feature added later.
 
@@ -54,6 +59,5 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 
 ## Open questions
 
-- **Dashboard sign-in:** magic link by email (needs an email provider: SMTP when self-hosted, a provider API on Cloudflare), GitHub OAuth, or passkeys.
-- **Anonymous tunnels:** allowed at all, or token required for every tunnel? Requiring a token is the simplest way to limit abuse.
+- **Anonymous tunnels:** proposed default is to require an API token for every tunnel, since the first users are a small invited group.
 - **Domain name.**
