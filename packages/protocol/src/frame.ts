@@ -6,18 +6,18 @@
  *   | type  | flags |   streamId    |   payload
  *   +-------+-------+---------------+--------------...
  *
- * Stream 0 carries connection-level frames (HELLO, WELCOME, GOAWAY, PING, PONG).
- * HELLO must keep this exact layout in every protocol version, so that a relay
- * can always read the version a client speaks.
+ * Stream 0 carries connection-level frames (WELCOME, GOAWAY, PING, PONG).
+ * The protocol version, API token and resume request travel as headers on the
+ * WebSocket upgrade request (see connect.ts), not as frames, so a relay can
+ * route and reject a connection before accepting the WebSocket.
  */
 
 export const FrameType = {
   // Connection level, stream 0.
-  HELLO: 0x01,
-  WELCOME: 0x02,
-  GOAWAY: 0x03,
-  PING: 0x04,
-  PONG: 0x05,
+  WELCOME: 0x01,
+  GOAWAY: 0x02,
+  PING: 0x03,
+  PONG: 0x04,
   // Per stream.
   REQ_HEAD: 0x10,
   REQ_BODY: 0x11,

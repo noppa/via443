@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeFrame,
   decodeGoAway,
-  decodeHello,
   decodeRequestHead,
   decodeReset,
   decodeResponseHead,
@@ -10,7 +9,6 @@ import {
   encodeBody,
   encodeFrame,
   encodeGoAway,
-  encodeHello,
   encodeRequestHead,
   encodeReset,
   encodeResponseHead,
@@ -20,8 +18,11 @@ import {
   HEADER_SIZE,
   isEnd,
   MAX_STREAM_ID,
-  PROTOCOL_VERSION,
+  formatResume,
+  parseBearer,
+  parseResume,
   ProtocolError,
+  stripHopByHop,
 } from '../src/index.ts';
 
 const roundTrip = (frame: Parameters<typeof encodeFrame>[0]) => decodeFrame(encodeFrame(frame));
@@ -68,13 +69,6 @@ describe('frame codec', () => {
 });
 
 describe('messages', () => {
-  it('round-trips HELLO with and without resume', () => {
-    const plain = { version: PROTOCOL_VERSION, token: 'tok' };
-    expect(decodeHello(roundTrip(encodeHello(plain)))).toEqual(plain);
-    const resume = { ...plain, resume: { tunnelId: 'abcd1234', resumeToken: 'secret' } };
-    expect(decodeHello(roundTrip(encodeHello(resume)))).toEqual(resume);
-  });
-
   it('round-trips WELCOME and GOAWAY on stream 0', () => {
     const welcome = { version: 1, tunnelId: 'abcd1234', url: 'https://abcd1234.via443.com', resumeToken: 'r' };
     const frame = roundTrip(encodeWelcome(welcome));
@@ -124,14 +118,45 @@ describe('messages', () => {
   it('rejects malformed payloads', () => {
     const raw = (type: number, text: string) =>
       decodeFrame(encodeFrame({ type: type as FrameType, flags: 0, streamId: 0, payload: new TextEncoder().encode(text) }));
-    expect(() => decodeHello(raw(FrameType.HELLO, 'not json'))).toThrow(/not valid JSON/);
-    expect(() => decodeHello(raw(FrameType.HELLO, '[]'))).toThrow(/not a JSON object/);
-    expect(() => decodeHello(raw(FrameType.HELLO, '{"version":"1","token":"t"}'))).toThrow(/version/);
-    expect(() => decodeHello(raw(FrameType.HELLO, '{"version":1,"token":"t","resume":{}}'))).toThrow(/tunnelId/);
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, 'not json'))).toThrow(/not valid JSON/);
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, '[]'))).toThrow(/not a JSON object/);
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, '{"version":"1"}'))).toThrow(/version/);
     expect(() => decodeRequestHead(raw(FrameType.REQ_HEAD, '{"method":"GET","path":"/","headers":[["a"]]}'))).toThrow(
       /headers/,
     );
     expect(() => decodeResponseHead(raw(FrameType.RES_HEAD, '{"status":42,"headers":[]}'))).toThrow(/status/);
-    expect(() => decodeWelcome(raw(FrameType.HELLO, '{}'))).toThrow(/expected frame/);
+    expect(() => decodeWelcome(raw(FrameType.GOAWAY, '{}'))).toThrow(/expected frame/);
+  });
+});
+
+describe('connect helpers', () => {
+  it('formats and parses resume requests', () => {
+    const resume = { tunnelId: 'abcd1234', resumeToken: 'x:y' };
+    expect(parseResume(formatResume(resume))).toEqual(resume);
+    for (const bad of [undefined, null, '', 'abc', ':tok', 'abc:']) expect(parseResume(bad)).toBeUndefined();
+  });
+
+  it('parses bearer tokens', () => {
+    expect(parseBearer('Bearer abc')).toBe('abc');
+    expect(parseBearer('bearer  abc ')).toBe('abc');
+    for (const bad of [undefined, null, '', 'Basic abc', 'Bearer', 'Bearer a b']) expect(parseBearer(bad)).toBeUndefined();
+  });
+});
+
+describe('stripHopByHop', () => {
+  it('drops hop-by-hop headers and those named in Connection, case-insensitively', () => {
+    expect(
+      stripHopByHop([
+        ['Content-Type', 'text/html'],
+        ['Connection', 'keep-alive, X-Custom'],
+        ['Keep-Alive', 'timeout=5'],
+        ['Transfer-Encoding', 'chunked'],
+        ['x-custom', '1'],
+        ['Set-Cookie', 'a=1'],
+      ]),
+    ).toEqual([
+      ['Content-Type', 'text/html'],
+      ['Set-Cookie', 'a=1'],
+    ]);
   });
 });

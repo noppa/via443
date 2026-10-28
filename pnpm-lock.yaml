@@ -20,6 +20,12 @@ importers:
 
   packages/protocol: {}
 
+  packages/relay-core:
+    dependencies:
+      '@via443/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+
 packages:
 
   '@jridgewell/resolve-uri@3.1.2':

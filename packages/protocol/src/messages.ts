@@ -1,20 +1,9 @@
 import { Flags, type Frame, FrameType, ProtocolError } from './frame.ts';
 
-export const PROTOCOL_VERSION = 1;
-
 /** Header list that keeps order and repeated names (e.g. Set-Cookie). */
 export type HeaderList = [name: string, value: string][];
 
-/** Client → relay, first frame on a new connection. */
-export interface Hello {
-  version: number;
-  /** API token of the user opening the tunnel. */
-  token: string;
-  /** Present when reconnecting: asks for the same tunnel ID back. */
-  resume?: { tunnelId: string; resumeToken: string };
-}
-
-/** Relay → client, reply to an accepted HELLO. */
+/** Relay → client, first frame after the WebSocket opens. */
 export interface Welcome {
   version: number;
   tunnelId: string;
@@ -100,24 +89,6 @@ function headerList(obj: Record<string, unknown>, key: string): HeaderList {
     throw new ProtocolError(`field "${key}" must be a list of [name, value] string pairs`);
   }
   return value as HeaderList;
-}
-
-export function encodeHello(hello: Hello): Frame {
-  return jsonFrame(FrameType.HELLO, 0, hello);
-}
-
-export function decodeHello(frame: Frame): Hello {
-  expectType(frame, FrameType.HELLO);
-  const obj = parseJson(frame);
-  const hello: Hello = { version: int(obj, 'version'), token: str(obj, 'token') };
-  if (obj.resume !== undefined) {
-    if (typeof obj.resume !== 'object' || obj.resume === null) {
-      throw new ProtocolError('field "resume" must be an object');
-    }
-    const resume = obj.resume as Record<string, unknown>;
-    hello.resume = { tunnelId: str(resume, 'tunnelId'), resumeToken: str(resume, 'resumeToken') };
-  }
-  return hello;
 }
 
 export function encodeWelcome(welcome: Welcome): Frame {
