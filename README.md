@@ -2,6 +2,16 @@
 
 Simple development reverse proxy &amp; tunneling tool that works anywhere where port 443 does.
 
+So, pretty much like ngrok, cloudflare tunnel, localtunnel and many others, but this one is specifically
+tested to work inside Claude app's sandbox.
+
+Create a token in the web dashboard, make sure it has access to the via433.com server (or your own self-hosted server)
+is allowed in network config, pass the `npx via443 ... --token xxx` command to Claude (or whatever agent harness & sandbox you use),
+and it'll expose your development server to the internet, so you can see what the agent is actually doing.
+
+Easily self-hostable in Cloudflare or on any cheap server with Node.js on it.  
+Access to the hosted via443.com version is currently invite-only.
+
 The client only makes an outbound WebSocket connection over HTTPS on port 443. It goes through an HTTP `CONNECT` proxy (`HTTPS_PROXY`) when one is set and trusts the CA bundle the environment provides (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`). So it works in cloud dev containers, coding-agent sandboxes and corporate networks where ngrok, cloudflared and localtunnel can't connect.
 
 **Status:** early development. See [docs/architecture.md](docs/architecture.md) for the design and progress.
@@ -74,4 +84,3 @@ To deploy on your own domain (a zone on Cloudflare; the Free plan works):
 3. Add a proxied DNS record for `*` (e.g. AAAA `*` → `100::`). Universal SSL covers `*.<domain>`. The apex is a Workers custom domain, so deploying creates its record.
 4. `pnpm exec wrangler secret put VIA443_SETUP_TOKEN --env production`
 5. `pnpm run deploy` (applies migrations to the remote D1, then deploys), and open `https://<domain>/setup?token=…`.
-
