@@ -13,11 +13,12 @@
   "dependencies": {
     "@via443/protocol": "workspace:*",
     "@via443/relay-core": "workspace:*",
-    "ws": "^8.22.0",
-    "@via443/server": "workspace:*"
+    "@via443/server": "workspace:*",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.2",
+    "@via443/relay-tests": "workspace:*",
     "via443": "workspace:*"
   }
 }

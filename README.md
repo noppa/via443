@@ -45,3 +45,22 @@ Sign-in links and invites aren't emailed yet: the admin dashboard shows the link
 | `VIA443_SETUP_TOKEN` | — | Secret that enables `/setup?token=…` to create the first admin. Only works while there are no accounts. |
 
 In production, put a TLS-terminating reverse proxy such as Caddy in front, with a wildcard certificate for `*.<domain>`.
+
+### Cloudflare (Workers + Durable Objects + D1)
+
+The same relay runs on Cloudflare, in `apps/cloudflare`. Locally:
+
+```sh
+pnpm dev:cf      # applies D1 migrations locally, then wrangler dev on http://localhost:8787
+```
+
+Put `VIA443_SETUP_TOKEN=some-secret` in `apps/cloudflare/.dev.vars`, then open `http://localhost:8787/setup?token=some-secret`. Sign-in links from the sign-in form appear in the `wrangler dev` output (or `wrangler tail` when deployed).
+
+To deploy on your own domain (a zone on Cloudflare; the Free plan works):
+
+1. `cd apps/cloudflare && pnpm exec wrangler d1 create via443-accounts` and put the database ID into `env.production` in `wrangler.jsonc`.
+2. In `env.production`, set `VIA443_DOMAIN` and the two routes (`<domain>/*` and `*.<domain>/*`) to your domain.
+3. Add proxied DNS records for the apex and for `*`. Universal SSL covers `*.<domain>`.
+4. `pnpm exec wrangler secret put VIA443_SETUP_TOKEN --env production`
+5. `pnpm run deploy` (applies migrations to the remote D1, then deploys), and open `https://<domain>/setup?token=…`.
+

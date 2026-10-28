@@ -69,6 +69,19 @@ apps/
 
 Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is the main reason to pick it.
 
+## Cloudflare adapter
+
+- The Worker routes by host. `<id>.<domain>` goes to the Durable Object named by the tunnel ID. On the apex, `/connect` checks the API token against D1 and hands the upgrade to a tunnel's Durable Object; everything else is the dashboard.
+- **Tunnel IDs are reserved in D1** (`tunnels` table) before a Durable Object takes the connection, since each tunnel lives in its own object and nothing else can see them all. The same table finds a user's or token's tunnels on revocation; the Worker then calls each object's `revoke()`.
+- **Resume:** the client's resume request goes to the old tunnel's object, which checks owner and resume token. If it refuses (expired, someone else's), the Worker falls back to a fresh ID, like the Node relay.
+- **The client socket uses the hibernation API**, so an idle tunnel isn't billed for wall time between the client's pings. The session is rebuilt when the object wakes; this is safe because the object only hibernates when no request or visitor WebSocket is in flight. Each client socket is tagged with a connection ID so a replaced socket's late events are ignored.
+- **Visitor WebSockets are ordinary (non-hibernating) sockets.** They keep the object in memory while open. Workers can't pause reading a WebSocket or report when a message has left, so visitor-side WebSocket backpressure is weaker than on Node; tunnel-side flow control still applies.
+- After a client disconnects, an alarm releases the tunnel ID (Durable Object storage and the D1 row) once the resume grace period has passed.
+- Gaps compared with the Node relay:
+  - No rate limit on requests to unknown tunnel IDs yet. Workers' rate-limiting binding can only count, not check, so a limit that also blocks the guesser's hits needs a different design (e.g. a per-IP Durable Object or a WAF rule).
+  - No idle timeout for clients that vanish without closing their socket; a resume replaces such a socket.
+  - Request bodies are limited by the Cloudflare plan (100 MB on Free and Pro).
+
 ## Database
 
 - **Account DB (users, invites, access requests, tokens):** D1 on Cloudflare and a SQLite file on Node (`accounts.db`, through the built-in `node:sqlite`, so no native dependency). Both speak SQLite.
@@ -103,8 +116,8 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - Packages export their TypeScript source directly. Node (≥ 22.18) strips types natively, so there is no build step while developing; the published client will get one.
 - `pnpm relay`: the self-host server on `localhost:8080`. Tunnels appear at `http://<id>.localhost:8080`, which browsers and curl resolve to 127.0.0.1 without any DNS setup. This is the fastest loop.
 - `pnpm via443 --port 3000 --server http://localhost:8080`: the client against the local relay.
-- `pnpm dev:cf` (later): `wrangler dev`, which runs the Worker and DO in Miniflare/workerd with a local D1.
-- The integration suite (`apps/node/test`) runs the real client against the real relay, including a TLS relay behind a local `CONNECT` proxy. Once the Cloudflare adapter exists, the same suite runs against it too, so the two adapters can't drift apart.
+- `pnpm dev:cf`: `wrangler dev`, which runs the Worker and its Durable Objects in workerd with a local D1, at `http://localhost:8787`.
+- The integration suite (`packages/relay-tests`) runs the real client against a running relay. Both adapters run it: `apps/node/test` against the Node relay (plus a TLS relay behind a local `CONNECT` proxy), and `apps/cloudflare/test` against `wrangler dev`, so the two can't drift apart. The suite only uses what a deployment offers: tokens are created and revoked through the dashboard, and network drops are simulated by cutting the TCP connection.
 
 ## Progress
 
@@ -116,6 +129,6 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [x] Accounts: `packages/server` with SQL migrations, setup token, invites, access requests, sign-in links (shown to the admin or logged, not emailed yet), sessions, API tokens, and the dashboard. Wired into the Node relay.
 - [ ] Email delivery (SMTP / email API) for sign-in links and invites.
 - [ ] Rate limits on the sign-in and access-request forms.
-- [ ] Cloudflare adapter.
+- [x] Cloudflare adapter: Worker, one Durable Object per tunnel, D1 accounts. Passes the shared suite under `wrangler dev`; not yet deployed.
 - [x] WebSocket pass-through (HMR): verified with Vite's HMR socket.
 - [ ] Multi-port, request log and inspector.

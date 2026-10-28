@@ -32,9 +32,12 @@ const code = async (promise: Promise<unknown>) => {
 describe('migrate', () => {
   it('applies each migration once and records it like wrangler does', () => {
     const raw = new DatabaseSync(':memory:');
-    expect(migrate(raw)).toEqual(['0001_accounts.sql']);
+    expect(migrate(raw)).toEqual(['0001_accounts.sql', '0002_tunnels.sql']);
     expect(migrate(raw)).toEqual([]);
-    expect(raw.prepare('SELECT name FROM d1_migrations').all()).toEqual([{ name: '0001_accounts.sql' }]);
+    expect(raw.prepare('SELECT name FROM d1_migrations ORDER BY id').all()).toEqual([
+      { name: '0001_accounts.sql' },
+      { name: '0002_tunnels.sql' },
+    ]);
   });
 
   it('rolls back a failing migration and leaves earlier ones applied', () => {

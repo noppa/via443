@@ -1,3 +1,8 @@
 packages:
   - packages/*
   - apps/*
+
+# Wrangler's bundler and runtime check their platform binaries on install.
+onlyBuiltDependencies:
+  - esbuild
+  - workerd

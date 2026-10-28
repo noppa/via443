@@ -7,12 +7,13 @@ import {
   connectErrorResponse,
   matchHost,
   parseConnectRequest,
+  type TunnelOwner,
   TunnelSession,
   tunnelErrorResponse,
 } from '@via443/relay-core';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { RateLimiter } from './rate-limit.ts';
-import { type TunnelOwner, TunnelRegistry } from './registry.ts';
+import { TunnelRegistry } from './registry.ts';
 
 /** Checks a client's API token. Null rejects the connection. */
 export type Authenticate = (token: string) => Promise<TunnelOwner | null>;

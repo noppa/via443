@@ -1,11 +1,14 @@
-import { generateResumeToken, generateTunnelId, sha256Hex, type TunnelSession } from '@via443/relay-core';
+import {
+  CLOSE_REPLACED,
+  CLOSE_REVOKED,
+  generateResumeToken,
+  generateTunnelId,
+  RESUME_GRACE_MS,
+  sha256Hex,
+  type TunnelOwner,
+  type TunnelSession,
+} from '@via443/relay-core';
 import type { ResumeRequest } from '@via443/protocol';
-
-/** Who opened a tunnel: the user and the API token they used. */
-export interface TunnelOwner {
-  userId: string;
-  tokenId: string;
-}
 
 interface Entry {
   owner: TunnelOwner;
@@ -21,11 +24,6 @@ export interface Attached {
   resumed: boolean;
 }
 
-/** WebSocket close code sent to a session that is replaced by a resumed connection. */
-export const CLOSE_REPLACED = 4000;
-/** WebSocket close code sent when the tunnel's token is revoked or its user disabled. */
-export const CLOSE_REVOKED = 4001;
-
 /**
  * In-memory tunnel table for the single-process relay. A tunnel ID stays
  * reserved for `graceMs` after its client disconnects, so the client can
@@ -35,7 +33,7 @@ export class TunnelRegistry {
   readonly #entries = new Map<string, Entry>();
   readonly #graceMs: number;
 
-  constructor(graceMs = 10 * 60_000) {
+  constructor(graceMs = RESUME_GRACE_MS) {
     this.#graceMs = graceMs;
   }
 

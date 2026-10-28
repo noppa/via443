@@ -1,0 +1,24 @@
+{
+  "name": "@via443/cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "description": "via443 relay on Cloudflare: a Worker, one Durable Object per tunnel, and D1",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler d1 migrations apply DB --local && wrangler dev",
+    "deploy": "wrangler d1 migrations apply DB --remote --env production && wrangler deploy --env production"
+  },
+  "dependencies": {
+    "@via443/protocol": "workspace:*",
+    "@via443/relay-core": "workspace:*",
+    "@via443/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261010.1",
+    "@types/ws": "^8.18.2",
+    "@via443/relay-tests": "workspace:*",
+    "via443": "workspace:*",
+    "wrangler": "4.148.0",
+    "ws": "^8.22.0"
+  }
+}
