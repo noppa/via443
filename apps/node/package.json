@@ -1,0 +1,23 @@
+{
+  "name": "@via443/node",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Self-hosted via443 relay: one Node process",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts"
+  },
+  "dependencies": {
+    "@via443/protocol": "workspace:*",
+    "@via443/relay-core": "workspace:*",
+    "ws": "^8.22.0",
+    "@via443/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2",
+    "via443": "workspace:*"
+  }
+}

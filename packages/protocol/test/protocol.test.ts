@@ -1,0 +1,162 @@
+import { describe, expect, it } from 'vitest';
+import {
+  decodeFrame,
+  decodeGoAway,
+  decodeRequestHead,
+  decodeReset,
+  decodeResponseHead,
+  decodeWelcome,
+  encodeBody,
+  encodeFrame,
+  encodeGoAway,
+  encodeRequestHead,
+  encodeReset,
+  encodeResponseHead,
+  encodeWelcome,
+  Flags,
+  FrameType,
+  HEADER_SIZE,
+  isEnd,
+  MAX_STREAM_ID,
+  formatResume,
+  parseBearer,
+  parseResume,
+  ProtocolError,
+  stripHopByHop,
+} from '../src/index.ts';
+
+const roundTrip = (frame: Parameters<typeof encodeFrame>[0]) => decodeFrame(encodeFrame(frame));
+
+describe('frame codec', () => {
+  it('round-trips header fields and payload', () => {
+    const payload = new Uint8Array([1, 2, 3, 255]);
+    const frame = roundTrip({ type: FrameType.RES_BODY, flags: Flags.END, streamId: 0x01020304, payload });
+    expect(frame.type).toBe(FrameType.RES_BODY);
+    expect(frame.flags).toBe(Flags.END);
+    expect(frame.streamId).toBe(0x01020304);
+    expect([...frame.payload]).toEqual([1, 2, 3, 255]);
+  });
+
+  it('uses a fixed big-endian 6-byte header', () => {
+    const bytes = encodeFrame({ type: FrameType.PING, flags: 0, streamId: 258, payload: new Uint8Array([9]) });
+    expect([...bytes]).toEqual([FrameType.PING, 0, 0, 0, 1, 2, 9]);
+    expect(HEADER_SIZE).toBe(6);
+  });
+
+  it('accepts the full stream id range', () => {
+    expect(roundTrip({ type: FrameType.RESET, flags: 0, streamId: MAX_STREAM_ID, payload: new Uint8Array() }).streamId)
+      .toBe(MAX_STREAM_ID);
+  });
+
+  it('decodes a frame that is a view into a larger buffer', () => {
+    const encoded = encodeFrame({ type: FrameType.PONG, flags: 0, streamId: 7, payload: new Uint8Array([42]) });
+    const big = new Uint8Array(encoded.byteLength + 10);
+    big.set(encoded, 5);
+    const frame = decodeFrame(big.subarray(5, 5 + encoded.byteLength));
+    expect(frame.streamId).toBe(7);
+    expect([...frame.payload]).toEqual([42]);
+  });
+
+  it('rejects short frames, unknown types and bad stream ids', () => {
+    expect(() => decodeFrame(new Uint8Array([1, 0, 0]))).toThrow(ProtocolError);
+    expect(() => decodeFrame(new Uint8Array([0x7f, 0, 0, 0, 0, 0]))).toThrow(/unknown frame type/);
+    for (const streamId of [-1, 1.5, MAX_STREAM_ID + 1]) {
+      expect(() => encodeFrame({ type: FrameType.PING, flags: 0, streamId, payload: new Uint8Array() })).toThrow(
+        ProtocolError,
+      );
+    }
+  });
+});
+
+describe('messages', () => {
+  it('round-trips WELCOME and GOAWAY on stream 0', () => {
+    const welcome = { version: 1, tunnelId: 'abcd1234', url: 'https://abcd1234.via443.com', resumeToken: 'r' };
+    const frame = roundTrip(encodeWelcome(welcome));
+    expect(frame.streamId).toBe(0);
+    expect(decodeWelcome(frame)).toEqual(welcome);
+    const goAway = { code: 'unauthorized', message: 'bad token' };
+    expect(decodeGoAway(roundTrip(encodeGoAway(goAway)))).toEqual(goAway);
+  });
+
+  it('round-trips request and response heads, keeping repeated headers in order', () => {
+    const req = {
+      method: 'POST',
+      path: '/a?b=c',
+      headers: [
+        ['content-type', 'text/plain'],
+        ['x-dup', '1'],
+        ['x-dup', '2'],
+      ] as [string, string][],
+    };
+    const reqFrame = roundTrip(encodeRequestHead(5, req, true));
+    expect(reqFrame.streamId).toBe(5);
+    expect(isEnd(reqFrame)).toBe(true);
+    expect(decodeRequestHead(reqFrame)).toEqual(req);
+
+    const res = { status: 201, headers: [['set-cookie', 'a=1'], ['set-cookie', 'b=2']] as [string, string][] };
+    const resFrame = roundTrip(encodeResponseHead(5, res, false));
+    expect(isEnd(resFrame)).toBe(false);
+    expect(decodeResponseHead(resFrame)).toEqual(res);
+  });
+
+  it('round-trips RESET with an optional message', () => {
+    expect(decodeReset(roundTrip(encodeReset(3, { code: 'cancelled' })))).toEqual({ code: 'cancelled' });
+    expect(decodeReset(roundTrip(encodeReset(3, { code: 'upstream_error', message: 'ECONNREFUSED' })))).toEqual({
+      code: 'upstream_error',
+      message: 'ECONNREFUSED',
+    });
+  });
+
+  it('encodes body chunks as raw payload', () => {
+    const frame = roundTrip(encodeBody(FrameType.REQ_BODY, 9, new Uint8Array([1, 2]), false));
+    expect(frame.type).toBe(FrameType.REQ_BODY);
+    expect(isEnd(frame)).toBe(false);
+    expect([...frame.payload]).toEqual([1, 2]);
+    expect(isEnd(encodeBody(FrameType.RES_BODY, 9, new Uint8Array(), true))).toBe(true);
+  });
+
+  it('rejects malformed payloads', () => {
+    const raw = (type: number, text: string) =>
+      decodeFrame(encodeFrame({ type: type as FrameType, flags: 0, streamId: 0, payload: new TextEncoder().encode(text) }));
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, 'not json'))).toThrow(/not valid JSON/);
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, '[]'))).toThrow(/not a JSON object/);
+    expect(() => decodeWelcome(raw(FrameType.WELCOME, '{"version":"1"}'))).toThrow(/version/);
+    expect(() => decodeRequestHead(raw(FrameType.REQ_HEAD, '{"method":"GET","path":"/","headers":[["a"]]}'))).toThrow(
+      /headers/,
+    );
+    expect(() => decodeResponseHead(raw(FrameType.RES_HEAD, '{"status":42,"headers":[]}'))).toThrow(/status/);
+    expect(() => decodeWelcome(raw(FrameType.GOAWAY, '{}'))).toThrow(/expected frame/);
+  });
+});
+
+describe('connect helpers', () => {
+  it('formats and parses resume requests', () => {
+    const resume = { tunnelId: 'abcd1234', resumeToken: 'x:y' };
+    expect(parseResume(formatResume(resume))).toEqual(resume);
+    for (const bad of [undefined, null, '', 'abc', ':tok', 'abc:']) expect(parseResume(bad)).toBeUndefined();
+  });
+
+  it('parses bearer tokens', () => {
+    expect(parseBearer('Bearer abc')).toBe('abc');
+    expect(parseBearer('bearer  abc ')).toBe('abc');
+    for (const bad of [undefined, null, '', 'Basic abc', 'Bearer', 'Bearer a b']) expect(parseBearer(bad)).toBeUndefined();
+  });
+});
+
+describe('stripHopByHop', () => {
+  it('drops hop-by-hop headers and those named in Connection, case-insensitively', () => {
+    expect(
+      stripHopByHop([
+        ['Content-Type', 'text/html'],
+        ['Connection', 'keep-alive, X-Custom'],
+        ['Keep-Alive', 'timeout=5'],
+        ['Transfer-Encoding', 'chunked'],
+        ['x-custom', '1'],
+        ['Set-Cookie', 'a=1'],
+      ]),
+    ).toEqual([
+      ['Content-Type', 'text/html'],
+      ['Set-Cookie', 'a=1'],
+    ]);
+  });
+});

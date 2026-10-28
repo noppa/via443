@@ -1,0 +1,23 @@
+{
+  "name": "via443",
+  "version": "0.0.0",
+  "description": "Expose a local dev server through a tunnel that only needs HTTPS on port 443, even behind a CONNECT proxy",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "via443": "./src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@via443/protocol": "workspace:*",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}
