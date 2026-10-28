@@ -33,11 +33,11 @@ _Status: in progress. This builds on `proxy-friendly-tunnel-initial-plan.md` and
 
 ## Flow control
 
-- Credit-based and per stream, like HTTP/2. Each direction of a stream starts with a 256 KiB window, which is how many body bytes the sender may have in flight that the receiver's consumer hasn't taken yet. Only body payload bytes count.
+- Credit-based and per stream, like HTTP/2. Each direction of a stream starts with a 1 MiB window, which is how many body bytes the sender may have in flight that the receiver's consumer hasn't taken yet. Only body payload bytes count.
 - The receiver returns credit with `WINDOW` frames (a 4-byte increment) once its consumer has taken the data: on the relay when the visitor side reads the response body, on the client when the chunk has been written to the local server's socket. Credit goes back in batches of at least half a window.
 - A sender that overruns its window is a protocol error and the connection closes (1002).
 - There is no connection-level window: per-stream windows already bound what any one connection can buffer, and the WebSocket itself runs over TCP.
-- The window caps one stream's throughput at about window / round-trip time (256 KiB at 50 ms ≈ 5 MB/s). If that turns out to be too low, raise `INITIAL_WINDOW` or grow windows for streams that are being drained quickly.
+- The window caps one stream's throughput at about window / round-trip time (1 MiB at 100 ms ≈ 10 MB/s). It started at 256 KiB, which proved noticeably slow through real proxies and long round trips. Both sides assume the same initial window, so changing it needs the relay and the client updated together. If it needs tuning again, the windows should be advertised in the handshake (like HTTP/2's SETTINGS) or grown for streams that drain quickly.
 
 ## WebSocket pass-through
 

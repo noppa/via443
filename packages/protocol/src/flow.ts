@@ -14,7 +14,7 @@ import { type Frame, FrameType, ProtocolError } from './frame.ts';
  * WINDOW payload: a 4-byte big-endian increment, 1..MAX_WINDOW.
  */
 
-export const INITIAL_WINDOW = 256 * 1024;
+export const INITIAL_WINDOW = 1024 * 1024;
 export const MAX_WINDOW = 0x7fff_ffff;
 
 /** The receiver returns credit in batches of at least this many bytes, to keep WINDOW frames rare. */

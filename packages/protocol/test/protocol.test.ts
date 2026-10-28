@@ -247,7 +247,11 @@ describe('WebSocket pass-through', () => {
     p.sender.message('');
     p.sender.close({ code: 1000 });
     await settle();
-    expect(p.delivered).toEqual(['héllo', big, '']);
+    expect(p.delivered).toHaveLength(3);
+    expect(p.delivered[0]).toBe('héllo');
+    // Compared as bytes: deep equality over millions of elements is very slow.
+    expect(Buffer.compare(p.delivered[1] as Uint8Array, big)).toBe(0);
+    expect(p.delivered[2]).toBe('');
     expect(p.frames.filter((f) => f.type === FrameType.WS_MSG && (f.flags & WsFlags.END) !== 0)).toHaveLength(3);
     expect(p.frames.every((f) => f.payload.byteLength <= 64 * 1024)).toBe(true);
     expect(p.frames.at(-1)!.type).toBe(FrameType.WS_CLOSE);

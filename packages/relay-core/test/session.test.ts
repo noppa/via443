@@ -145,13 +145,16 @@ describe('TunnelSession', () => {
     reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
     const res = await pending;
     const chunk = new Uint8Array(64 * 1024);
-    for (let i = 0; i < 4; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
+    const chunks = INITIAL_WINDOW / chunk.byteLength;
+    for (let i = 0; i < chunks; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
     await tick();
     const windows = () => socket.sent.filter((f) => f.type === FrameType.WINDOW);
     expect(windows()).toHaveLength(0);
 
+    // Credit goes back in batches of half a window.
     const reader = res.body!.getReader();
-    await reader.read();
+    for (let i = 0; i < chunks / 2 - 1; i++) await reader.read();
+    expect(windows()).toHaveLength(0);
     await reader.read();
     expect(windows().map(decodeWindow)).toEqual([INITIAL_WINDOW / 2]);
     expect(windows()[0]!.streamId).toBe(streamId);
@@ -164,7 +167,7 @@ describe('TunnelSession', () => {
     reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
     const res = await pending;
     const chunk = new Uint8Array(64 * 1024);
-    for (let i = 0; i < 5; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
+    for (let i = 0; i <= INITIAL_WINDOW / chunk.byteLength; i++) reply(encodeBody(FrameType.RES_BODY, streamId, chunk, false));
     expect(socket.closedWith?.[0]).toBe(1002);
     expect(socket.closedWith?.[1]).toMatch(/window exceeded/);
     await expect(res.text()).rejects.toThrow(/disconnected/);
