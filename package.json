@@ -8,6 +8,8 @@
   },
   "scripts": {
     "test": "vitest run",
+    "relay": "pnpm --filter @via443/node start",
+    "via443": "node packages/client/src/cli.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
