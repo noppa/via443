@@ -18,9 +18,12 @@ via443.com is invite-only for now: ask for access at [via443.com](https://via443
 ## CLI
 
 ```
-via443 --port <port> [options]
+via443 --port <port> [--port <name>=<port> ...] [options]
 
-  -p, --port <port>      local port to expose (required)
+  -p, --port [<name>=]<port>
+                         local port to expose (required, repeatable)
+      --urls-file <path> write {"<name>": "<url>"} JSON here, and keep it
+                         up to date if a URL changes after a reconnect
       --host <host>      local host to forward to (default: localhost)
       --server <server>  relay domain or URL (default: via443.com, env: VIA443_SERVER)
       --token <token>    API token (env: VIA443_TOKEN)
@@ -30,6 +33,16 @@ via443 --port <port> [options]
 ```
 
 The URL stays the same if the connection drops and the client reconnects within a few minutes.
+
+Each `--port` gets its own URL, for apps that need more than one origin:
+
+```sh
+npx via443 --port 3000 --port api=3001 --urls-file urls.json --token v443_...
+# 3000=https://<id>.via443.com
+# api=https://<id2>.via443.com
+```
+
+With one port, the CLI prints just the URL. A port's name defaults to its number.
 
 ## Library
 

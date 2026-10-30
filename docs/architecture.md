@@ -21,7 +21,7 @@ _Status: in progress. This builds on `proxy-friendly-tunnel-initial-plan.md` and
 - **ID format:** 16 random lowercase alphanumeric characters (about 82 bits), so a tunnel URL can't be found by guessing. It started at 8 characters (about 41 bits), which relied on the relay rate-limiting unknown tunnel hosts per client IP; the Cloudflare relay never had that limit, and the URL is the only thing protecting a tunnel.
 - **ID format, later: wormhole-style names.** Short, readable IDs (e.g. `7-purple-sausage`) with protection against guessing, in the spirit of magic-wormhole: an ID has a public part that identifies the tunnel and a secret part that must also match. A request with the right public part but a wrong secret part is evidence that someone is guessing, and the relay shuts the tunnel down (or rotates its ID and tells the client). One thing to solve first: the public part is easy to enumerate, so an attacker could kill everyone's tunnels on purpose. Possible fixes are a small budget of wrong guesses before shutdown, rotating instead of killing, and per-IP blocking.
 - The protocol and the client treat tunnel IDs as **opaque strings** issued by the relay, so changing the ID scheme later is a relay-only change.
-- **Multi-port:** each exposed port gets its own random ID (`--port 8080 --port sandbox=8081` gives two unrelated hostnames). The client prints the name → URL mapping and can write it to a file or env var so the app can find its sibling origins. All IDs stay the same across reconnects through the resume token.
+- **Multi-port:** each exposed port gets its own random ID (`--port 8080 --port sandbox=8081` gives two unrelated hostnames). This is entirely client-side: the CLI opens one tunnel per port. It prints `<name>=<url>` lines, and `--urls-file <path>` writes the mapping as JSON (rewritten if a URL changes after a reconnect) so the app can find its sibling origins. A port's name defaults to its number. All IDs stay the same across reconnects through the resume token. If one tunnel closes for good, the CLI closes the others and exits.
 - **One WebSocket per tunnel.** A multi-port client opens one connection per port instead of multiplexing several tunnels over one socket. On Cloudflare that maps each connection to exactly one Durable Object (named by its tunnel ID), with no lookup table in between.
 
 ## Connection handshake
@@ -131,4 +131,5 @@ Hono runs unchanged on Workers and on Node through `@hono/node-server`, which is
 - [ ] Rate limits on the sign-in and access-request forms.
 - [x] Cloudflare adapter: Worker, one Durable Object per tunnel, D1 accounts. Passes the shared suite under `wrangler dev`, and runs at via443.com: HTTP, streaming both ways, WebSockets and Vite HMR verified there, including after the tunnel's object has been idle.
 - [x] WebSocket pass-through (HMR): verified with Vite's HMR socket.
-- [ ] Multi-port, request log and inspector.
+- [x] Multi-port: repeatable `--port [<name>=]<port>`, `--urls-file`.
+- [ ] Request log and inspector.

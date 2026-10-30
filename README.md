@@ -5,7 +5,7 @@ Simple development reverse proxy &amp; tunneling tool that works anywhere where 
 So, pretty much like ngrok, cloudflare tunnel, localtunnel and many others, but this one is specifically
 tested to work inside Claude app's sandbox.
 
-Create a token in the web dashboard, make sure it has access to the via433.com server (or your own self-hosted server)
+Create a token in the web dashboard, make sure it has access to the via443.com server (or your own self-hosted server)
 is allowed in network config, pass the `npx via443 ... --token xxx` command to Claude (or whatever agent harness & sandbox you use),
 and it'll expose your development server to the internet, so you can see what the agent is actually doing.
 
@@ -38,6 +38,14 @@ VIA443_SETUP_TOKEN=some-secret pnpm relay
 # 3. Some local app, e.g. on port 3000, then the client:
 pnpm via443 --port 3000 --server http://localhost:8080 --token v443_...
 # → prints http://<id>.localhost:8080, which curl and browsers resolve locally
+```
+
+Several local servers at once, each at its own URL:
+
+```sh
+pnpm via443 --port 3000 --port api=3001 --urls-file urls.json --server http://localhost:8080 --token v443_...
+# → prints 3000=http://<id>.localhost:8080 and api=http://<id2>.localhost:8080,
+#   and writes the same mapping to urls.json as {"3000": "...", "api": "..."}
 ```
 
 Sign-in links and invites aren't emailed yet: the admin dashboard shows the link for you to send by hand, and links from the sign-in form are written to the relay's log.
