@@ -214,7 +214,7 @@ export function describeRelay(name: string, start: () => Promise<RelayHarness>):
       it('forwards requests and responses', async () => {
         const appPort = await startApp();
         const { relay, tunnel } = await open(appPort);
-        expect(tunnel.url).toMatch(/^http:\/\/[a-z0-9]{8}\.localhost$/);
+        expect(tunnel.url).toMatch(/^http:\/\/[a-z0-9]{16}\.localhost$/);
 
         const reply = await visit(relay.port, tunnel.url, '/echo?x=1', { method: 'POST', body: 'hello' });
         expect(reply.status).toBe(200);
@@ -337,7 +337,7 @@ export function describeRelay(name: string, start: () => Promise<RelayHarness>):
 
       it('answers 404 for unknown tunnels and rejects bad tokens', async () => {
         const relay = await start();
-        expect((await visit(relay.port, 'http://abcd1234.localhost', '/')).status).toBe(404);
+        expect((await visit(relay.port, 'http://abcd1234efgh5678.localhost', '/')).status).toBe(404);
 
         const error = await openTunnel({ port: 1, server: `http://localhost:${relay.port}`, token: 'wrong', env: {} }).catch(
           (err: unknown) => err,

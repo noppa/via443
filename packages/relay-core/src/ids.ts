@@ -1,7 +1,7 @@
 const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
-export const TUNNEL_ID_LENGTH = 8;
+export const TUNNEL_ID_LENGTH = 16;
 
-/** A random tunnel ID: 8 characters of [a-z0-9], about 41 bits. */
+/** A random tunnel ID: 16 characters of [a-z0-9], about 82 bits. */
 export function generateTunnelId(): string {
   let id = '';
   // 252 is the largest multiple of 36 below 256; rejecting bytes above it avoids modulo bias.

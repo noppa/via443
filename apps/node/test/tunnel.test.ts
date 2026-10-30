@@ -126,7 +126,7 @@ describe('tunnel over TLS through a CONNECT proxy', () => {
 
     const tunnel = await startTunnel({ port: appPort, host: '127.0.0.1', server: `https://localhost:${frontPort}`, token, env, ca: [cert] });
     expect(proxy.connects).toEqual([`localhost:${frontPort}`]);
-    expect(tunnel.url).toMatch(/^https:\/\/[a-z0-9]{8}\.localhost$/);
+    expect(tunnel.url).toMatch(/^https:\/\/[a-z0-9]{16}\.localhost$/);
 
     const reply = await visit(relay.port, tunnel.url, '/via-proxy', { method: 'POST', body: 'through the proxy' });
     expect(json(reply)).toMatchObject({ url: '/via-proxy', body: 'through the proxy' });
