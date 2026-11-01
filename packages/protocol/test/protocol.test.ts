@@ -85,7 +85,7 @@ describe('frame codec', () => {
 
 describe('messages', () => {
   it('round-trips WELCOME and GOAWAY on stream 0', () => {
-    const welcome = { version: 1, tunnelId: 'abcd1234', url: 'https://abcd1234.via443.com', resumeToken: 'r' };
+    const welcome = { version: 1, tunnelId: 'abcd1234efgh5678', url: 'https://abcd1234efgh5678.via443.com', resumeToken: 'r' };
     const frame = roundTrip(encodeWelcome(welcome));
     expect(frame.streamId).toBe(0);
     expect(decodeWelcome(frame)).toEqual(welcome);
@@ -286,7 +286,7 @@ describe('WebSocket pass-through', () => {
 
 describe('connect helpers', () => {
   it('formats and parses resume requests', () => {
-    const resume = { tunnelId: 'abcd1234', resumeToken: 'x:y' };
+    const resume = { tunnelId: 'abcd1234efgh5678', resumeToken: 'x:y' };
     expect(parseResume(formatResume(resume))).toEqual(resume);
     for (const bad of [undefined, null, '', 'abc', ':tok', 'abc:']) expect(parseResume(bad)).toBeUndefined();
   });

@@ -57,7 +57,7 @@ describe('TunnelSession', () => {
   it('forwards a GET and streams the response back', async () => {
     const s = setup();
     const pending = s.session.handleRequest(
-      new Request('https://abcd1234.via443.com/path?q=1', {
+      new Request('https://abcd1234efgh5678.via443.com/path?q=1', {
         headers: { connection: 'x-drop', 'x-drop': '1', 'x-forwarded-for': '6.6.6.6', accept: 'text/plain' },
       }),
       ctx,
@@ -72,7 +72,7 @@ describe('TunnelSession', () => {
     expect(req.path).toBe('/path?q=1');
     expect(req.headers).toContainEqual(['accept', 'text/plain']);
     expect(req.headers).toContainEqual(['x-forwarded-for', '203.0.113.7']);
-    expect(req.headers).toContainEqual(['x-forwarded-host', 'abcd1234.via443.com']);
+    expect(req.headers).toContainEqual(['x-forwarded-host', 'abcd1234efgh5678.via443.com']);
     expect(req.headers).toContainEqual(['x-forwarded-proto', 'https']);
     expect(req.headers.map(([n]) => n)).not.toContain('x-drop');
     expect(req.headers.map(([n]) => n)).not.toContain('connection');
@@ -107,7 +107,7 @@ describe('TunnelSession', () => {
   it('uploads a request body in chunks and ends it', async () => {
     const { socket, session } = setup();
     void session.handleRequest(
-      new Request('https://abcd1234.via443.com/upload', { method: 'POST', body: 'x'.repeat(150 * 1024) }),
+      new Request('https://abcd1234efgh5678.via443.com/upload', { method: 'POST', body: 'x'.repeat(150 * 1024) }),
       ctx,
     );
     await tick();
@@ -123,7 +123,7 @@ describe('TunnelSession', () => {
   it('stops uploading when the client has no credit left, and resumes on WINDOW', async () => {
     const { socket, session, reply } = setup();
     void session.handleRequest(
-      new Request('https://abcd1234.via443.com/upload', { method: 'POST', body: 'x'.repeat(INITIAL_WINDOW + 100) }),
+      new Request('https://abcd1234efgh5678.via443.com/upload', { method: 'POST', body: 'x'.repeat(INITIAL_WINDOW + 100) }),
       ctx,
     );
     const bodyBytes = () =>
@@ -140,7 +140,7 @@ describe('TunnelSession', () => {
 
   it('returns response credit only as the visitor reads', async () => {
     const { socket, session, reply } = setup();
-    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     const streamId = socket.sent[0]!.streamId;
     reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
     const res = await pending;
@@ -162,7 +162,7 @@ describe('TunnelSession', () => {
 
   it('closes the connection when the client overruns its window', async () => {
     const { socket, session, reply } = setup();
-    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     const streamId = socket.sent[0]!.streamId;
     reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
     const res = await pending;
@@ -175,7 +175,7 @@ describe('TunnelSession', () => {
 
   it('answers 502 when the client resets before responding', async () => {
     const { socket, session, reply } = setup();
-    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     reply(encodeReset(socket.sent[0]!.streamId, { code: 'upstream_error', message: 'ECONNREFUSED' }));
     const res = await pending;
     expect(res.status).toBe(502);
@@ -184,7 +184,7 @@ describe('TunnelSession', () => {
 
   it('returns a bodiless response for 204 and HEAD-style END heads', async () => {
     const { socket, session, reply } = setup();
-    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     reply(encodeResponseHead(socket.sent[0]!.streamId, { status: 204, headers: [] }, true));
     const res = await pending;
     expect(res.status).toBe(204);
@@ -194,20 +194,20 @@ describe('TunnelSession', () => {
 
   it('fails pending and streaming requests when the socket closes', async () => {
     const { socket, session, reply } = setup();
-    const streaming = session.handleRequest(new Request('https://abcd1234.via443.com/a'), ctx);
-    const waiting = session.handleRequest(new Request('https://abcd1234.via443.com/b'), ctx);
+    const streaming = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/a'), ctx);
+    const waiting = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/b'), ctx);
     reply(encodeResponseHead(socket.sent[0]!.streamId, { status: 200, headers: [] }, false));
     const res = await streaming;
 
     session.closed();
     expect((await waiting).status).toBe(502);
     await expect(res.text()).rejects.toThrow(/disconnected/);
-    expect((await session.handleRequest(new Request('https://abcd1234.via443.com/c'), ctx)).status).toBe(502);
+    expect((await session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/c'), ctx)).status).toBe(502);
   });
 
   it('sends RESET when the visitor cancels the response body', async () => {
     const { socket, session, reply } = setup();
-    const pending = session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     const streamId = socket.sent[0]!.streamId;
     reply(encodeResponseHead(streamId, { status: 200, headers: [] }, false));
     await (await pending).body!.cancel();
@@ -234,7 +234,7 @@ describe('TunnelSession', () => {
 
 describe('TunnelSession WebSockets', () => {
   const upgradeRequest = () =>
-    new Request('https://abcd1234.via443.com/hmr', {
+    new Request('https://abcd1234efgh5678.via443.com/hmr', {
       headers: { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-protocol': 'vite-hmr' },
     });
 
@@ -325,7 +325,7 @@ describe('TunnelSession WebSockets', () => {
 
   it('rejects 101 for plain requests and WebSocket frames before the upgrade', async () => {
     const plain = setup();
-    const pending = plain.session.handleRequest(new Request('https://abcd1234.via443.com/'), ctx);
+    const pending = plain.session.handleRequest(new Request('https://abcd1234efgh5678.via443.com/'), ctx);
     plain.reply(encodeResponseHead(plain.socket.sent[0]!.streamId, { status: 101, headers: [] }, false));
     expect((await pending).status).toBe(502);
 
@@ -337,11 +337,12 @@ describe('TunnelSession WebSockets', () => {
 });
 
 describe('ids', () => {
-  it('generates 8-character [a-z0-9] tunnel ids', () => {
+  it('generates 16-character [a-z0-9] tunnel ids', () => {
     const ids = new Set(Array.from({ length: 1000 }, generateTunnelId));
     expect(ids.size).toBe(1000);
     for (const id of ids) expect(isTunnelId(id)).toBe(true);
-    expect(isTunnelId('ABCD1234')).toBe(false);
+    expect(isTunnelId('ABCDEFGH12345678')).toBe(false);
+    expect(isTunnelId('abcd1234')).toBe(false);
     expect(isTunnelId('www')).toBe(false);
   });
 
@@ -354,12 +355,12 @@ describe('matchHost', () => {
   it('recognises the apex and tunnel hosts', () => {
     expect(matchHost('via443.com', 'via443.com')).toEqual({ kind: 'apex' });
     expect(matchHost('VIA443.com:443', 'via443.com')).toEqual({ kind: 'apex' });
-    expect(matchHost('abcd1234.via443.com', 'via443.com')).toEqual({ kind: 'tunnel', tunnelId: 'abcd1234' });
-    expect(matchHost('abcd1234.localhost:8080', 'localhost:8080')).toEqual({ kind: 'tunnel', tunnelId: 'abcd1234' });
+    expect(matchHost('abcd1234efgh5678.via443.com', 'via443.com')).toEqual({ kind: 'tunnel', tunnelId: 'abcd1234efgh5678' });
+    expect(matchHost('abcd1234efgh5678.localhost:8080', 'localhost:8080')).toEqual({ kind: 'tunnel', tunnelId: 'abcd1234efgh5678' });
   });
 
   it('rejects other hosts', () => {
-    for (const host of [undefined, '', 'www.via443.com', 'a.abcd1234.via443.com', 'abcd1234.evil.com', 'abcd1234.localhost:9999']) {
+    for (const host of [undefined, '', 'www.via443.com', 'a.abcd1234efgh5678.via443.com', 'abcd1234efgh5678.evil.com', 'abcd1234efgh5678.localhost:9999']) {
       expect(matchHost(host, host?.includes('localhost') ? 'localhost:8080' : 'via443.com').kind).toBe('unknown');
     }
   });
@@ -372,10 +373,10 @@ describe('parseConnectRequest', () => {
 
   it('accepts a valid upgrade with an optional resume header', () => {
     expect(connect(valid)).toEqual({ ok: true, token: 'tok', resume: undefined });
-    expect(connect({ ...valid, [ConnectHeader.RESUME]: 'abcd1234:secret' })).toEqual({
+    expect(connect({ ...valid, [ConnectHeader.RESUME]: 'abcd1234efgh5678:secret' })).toEqual({
       ok: true,
       token: 'tok',
-      resume: { tunnelId: 'abcd1234', resumeToken: 'secret' },
+      resume: { tunnelId: 'abcd1234efgh5678', resumeToken: 'secret' },
     });
   });
 
