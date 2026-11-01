@@ -4,6 +4,7 @@ import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
 import { AccountError, type Accounts, LIFETIMES, type Role, type User } from './accounts.ts';
 import { sha256Hex } from './crypto.ts';
+import { llmsTxt } from './llms.ts';
 import type { Mailer } from './mailer.ts';
 import {
   confirmLoginPage,
@@ -117,6 +118,13 @@ export function createApp(config: AppConfig): Hono<Env> {
             : undefined,
       }),
     );
+  });
+
+  // Instructions for coding agents, see https://llmstxt.org.
+  const llms = llmsTxt({ publicOrigin, serverFlag });
+  app.get('/llms.txt', (c) => {
+    c.header('cache-control', 'public, max-age=3600');
+    return c.text(llms);
   });
 
   // Signing in

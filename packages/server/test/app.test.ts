@@ -125,6 +125,24 @@ describe('dashboard', () => {
   });
 });
 
+describe('llms.txt', () => {
+  it('explains access, tokens and the npx command as plain text', async () => {
+    const res = await browser(setup().app).get('/llms.txt');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/^text\/plain/);
+    const text = await res.text();
+    expect(text).toMatch(/^# via443\n/);
+    expect(text).toContain(`${ORIGIN}/request-access`);
+    expect(text).toContain('npx via443 --port 3000 --token v443_...');
+    expect(text).not.toContain('--server via443.test');
+  });
+
+  it('includes --server in the commands when the relay is not the client default', async () => {
+    const text = await (await browser(setup({}).app).get('/llms.txt')).text();
+    expect(text).toContain('npx via443 --port 3000 --token v443_... --server via443.test');
+  });
+});
+
 describe('invites and access requests', () => {
   it('lets an invited pal join, without admin powers', async () => {
     const { app, admin } = await signedInAdmin();
