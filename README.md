@@ -92,3 +92,9 @@ To deploy on your own domain (a zone on Cloudflare; the Free plan works):
 3. Add a proxied DNS record for `*` (e.g. AAAA `*` → `100::`). Universal SSL covers `*.<domain>`. The apex is a Workers custom domain, so deploying creates its record.
 4. `pnpm exec wrangler secret put VIA443_SETUP_TOKEN --env production`
 5. `pnpm run deploy` (applies migrations to the remote D1, then deploys), and open `https://<domain>/setup?token=…`.
+
+## AI disclosure
+
+This project was built with heavy use of AI tools, mostly Claude.  
+You could even say it was "vibe coded", as I haven't actually read all of the code.  
+Take that as you will.
