@@ -1,6 +1,6 @@
 {
   "name": "via443",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Expose a local dev server through a tunnel that only needs HTTPS on port 443, even behind a CONNECT proxy",
   "keywords": [
     "tunnel",
